@@ -300,7 +300,7 @@ export async function renderMarksheet(sourceHtml: string, data: AppData, student
 }
 
 async function renderModernTemplate(doc: Document, data: AppData, student: Student): Promise<string> {
-  const modernSettings = data.marksheetSettings as AppData['marksheetSettings'] & { showIssueDate?: boolean; issueDateFormat?: string; issueDateLabel?: string };
+  const modernSettings = data.marksheetSettings;
   // The supplied HTML is a visual template only. Its embedded demo controller is
   // deliberately removed so sample values can never overwrite application data.
   doc.querySelectorAll('script:not([src])').forEach(script => script.remove());
