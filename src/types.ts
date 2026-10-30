@@ -36,7 +36,7 @@ export type AppData = {
     tableOrientation: 'auto' | 'subjects-rows' | 'subjects-columns';
     reportExams: ExamKey[]; showTotalColumn: boolean; showSubjectGrade: boolean;
     showMarksRow: boolean; showGradeRow: boolean; showOverallSummary: boolean; marksPrecision: 0 | 1 | 2; watermarkMode: 'repeat' | 'single'; watermarkOpacity: number; watermarkRepeatSize: number; watermarkCenterSize: number;
-    showIssueDate: boolean; issueDateFormat: 'DD-MM-YYYY' | 'DD/MM/YYYY' | 'YYYY-MM-DD'; issueDateLabel: string;
+    showIssueDate: boolean; issueDate: string; issueDateFormat: 'DD-MM-YYYY' | 'DD/MM/YYYY' | 'YYYY-MM-DD'; issueDateLabel: string;
     signatures: SignatureBlock[];
   };
   settings: { sectionEnabled: boolean };
