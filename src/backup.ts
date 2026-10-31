@@ -1,6 +1,6 @@
 import JSZip from 'jszip';
 import type { AppData, Student } from './types';
-import { normalizeData } from './data';
+import { normalizeData, subjectsForClass } from './data';
 
 const dataUrlToBlob = async (url: string) => (await fetch(url)).blob();
 const blobToDataUrl = (blob: Blob) => new Promise<string>((resolve, reject) => {
@@ -9,9 +9,12 @@ const blobToDataUrl = (blob: Blob) => new Promise<string>((resolve, reject) => {
   reader.onerror = reject;
   reader.readAsDataURL(blob);
 });
-export async function exportZip(data: AppData, template: string) {
+export async function exportZip(data: AppData, template: string, filenamePrefix = "", backupLabel = 'backup', extraManifest: Record<string, unknown> = {}) {
   const zip = new JSZip();
   const manifest: any = structuredClone(data);
+  manifest.backupType = filenamePrefix === 'promote_' ? 'promotion' : backupLabel;
+  manifest.createdAt = new Date().toISOString();
+  Object.assign(manifest, extraManifest);
   manifest.assets = { photos: {}, schoolLogo: null, logoLeft: null, logoRight: null, watermark: null };
   for (const student of manifest.students as Student[]) {
     if (student.photo?.startsWith('data:')) {
@@ -44,18 +47,61 @@ export async function exportZip(data: AppData, template: string) {
   } catch { /* The user-uploaded logo, if any, is already included above. */ }
   zip.file('manifest.json', JSON.stringify(manifest, null, 2));
   zip.file('marksheet-template.html', template);
-  zip.file('README.txt', 'Marksheet Studio backup. Import this ZIP in Marksheet Studio to restore the class data and images.\n');
+  zip.file('README.txt', filenamePrefix === 'promote_' ? 'Marksheet Studio promotion package. Contains promoted student details, new class/session and newly assigned roll numbers. Previous examination marks and attendance values are intentionally excluded. Import this ZIP through Import / Export to start the destination class workspace.\n' : 'Marksheet Studio class backup. Contains the class data, marks, attendance, settings, template and referenced image assets. Import this ZIP in Marksheet Studio to restore the class data.\n');
   const blob = await zip.generateAsync({ type: 'blob', compression: 'DEFLATE', compressionOptions: { level: 6 } });
+  const verified = await JSZip.loadAsync(blob);
+  if (!verified.file('manifest.json') || !verified.file('marksheet-template.html')) throw new Error('Backup verification failed: required files are missing.');
+  const verifiedManifest = JSON.parse(await verified.file('manifest.json')!.async('text'));
+  if (!Array.isArray(verifiedManifest.students) || verifiedManifest.students.length !== data.students.length) throw new Error('Backup verification failed: student record count mismatch.');
   const url = URL.createObjectURL(blob);
-  const a = document.createElement('a'); a.href = url; a.download = `marksheet-${data.classInfo.className}-${data.classInfo.section}-${data.academicSession}.zip`; a.click();
+  const a = document.createElement('a'); a.href = url;
+  const timestamp = new Date().toISOString().replace(/[:.]/g, '-').replace('T','_').replace('Z','');
+  const promotionMeta = (extraManifest.promotion || {}) as { fromClass?: string; toClass?: string; toSession?: string };
+  a.download = filenamePrefix === 'promote_' && promotionMeta.fromClass && promotionMeta.toClass
+    ? `promote_class-${safeName(promotionMeta.fromClass)}-to-${safeName(promotionMeta.toClass)}_session-${safeName(promotionMeta.toSession || data.academicSession)}_${timestamp}.zip`
+    : `${filenamePrefix}marksheet-studio_class-${safeName(data.classInfo.className)}${data.classInfo.section ? `_${safeName(data.classInfo.section)}` : ''}_session-${safeName(data.academicSession)}_${backupLabel}_${timestamp}.zip`;
+  a.click();
   window.setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
+
+const safeName = (value: string) => String(value || '').trim().replace(/[^a-zA-Z0-9_-]+/g, '-').replace(/^-+|-+$/g, '') || 'unknown';
+
+export function buildPromotionData(data: AppData, destinationClass: string, destinationSession: string): AppData {
+  const sorted = [...data.students].sort((a, b) => {
+    const total = (studentId: string) => data.results.final.find(m => m.studentId === studentId)
+      ? data.subjects.filter(subject => subject.enabled !== false).reduce((sum, subject) => sum + (Number(data.results.final.find(m => m.studentId === studentId)?.[subject.id]) || 0), 0) : 0;
+    const marksDiff = total(b.studentId) - total(a.studentId);
+    if (marksDiff) return marksDiff;
+    const attendancePct = (student: Student) => student.attendance.workingDays > 0 ? student.attendance.daysPresent / student.attendance.workingDays : 0;
+    const attendanceDiff = attendancePct(b) - attendancePct(a);
+    if (attendanceDiff) return attendanceDiff;
+    const ar = Number(a.roll), br = Number(b.roll);
+    if (Number.isFinite(ar) && Number.isFinite(br) && ar !== br) return ar - br;
+    return a.roll.localeCompare(b.roll, undefined, { numeric: true });
+  });
+  const nextSubjects = subjectsForClass(destinationClass);
+  const students = sorted.map((student, index) => ({
+    ...student, roll: String(index + 1),
+    attendance: { workingDays: 0, daysPresent: 0, daysAbsent: 0, remarks: '' },
+    remarks: { overall: '', attendance: '', subjects: Object.fromEntries(nextSubjects.map(subject => [subject.id, ''])) }
+  }));
+  const results: AppData['results'] = { pa1: [], pa2: [], hy: [], pa3: [], pa4: [], final: [] };
+  const classSubjectConfigs = { ...structuredClone(data.classSubjectConfigs), [destinationClass]: nextSubjects };
+  return { ...structuredClone(data), academicSession: destinationSession, classInfo: { ...data.classInfo, className: destinationClass, totalWorkingDays: 0 }, subjects: nextSubjects, classSubjectConfigs, students, results };
+}
+
+export async function exportPromotionZip(data: AppData, template: string, destinationClass: string, destinationSession: string) {
+  const promotion = buildPromotionData(data, destinationClass, destinationSession);
+  await exportZip(promotion, template, 'promote_', 'promotion', { promotion: { fromClass: data.classInfo.className, fromSession: data.academicSession, toClass: destinationClass, toSession: destinationSession, ranking: 'final-marks-desc,attendance-percentage-desc,previous-roll-asc' } });
+}
+
 export async function importZip(file: File): Promise<AppData> {
   const zip = await JSZip.loadAsync(file);
   const manifestFile = zip.file('manifest.json');
   if (!manifestFile) throw new Error('ZIP does not contain manifest.json.');
   const raw = JSON.parse(await manifestFile.async('text'));
-  const data = normalizeData(raw);
+  const { backupType: _backupType, createdAt: _createdAt, promotion: _promotion, ...appData } = raw;
+  const data = normalizeData(appData);
   const assets = raw.assets || {};
   for (const student of data.students) {
     const path = assets.photos?.[student.studentId] || (typeof student.photo === 'string' ? student.photo : '');

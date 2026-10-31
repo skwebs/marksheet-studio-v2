@@ -4,9 +4,9 @@ import * as XLSX from 'xlsx';
 import Cropper from 'cropperjs';
 import 'cropperjs/dist/cropper.css';
 import { Archive, BookOpen, Check, ChevronDown, Download, FileSpreadsheet, FileUp, ImagePlus, Printer, School, Settings, Users, ClipboardList, CalendarCheck, Eye, Save, Trash2, Upload, Plus, ArrowUp, ArrowDown, ArrowLeft, ArrowRight } from 'lucide-react';
-import { db, loadData, saveData } from './db';
+import { loadData, saveData, listWorkspaces, loadWorkspace, saveWorkspace } from './db';
 import { blankStudent, createDefaultData, emptyMarks, examKeys, normalizeData, subjectsForClass } from './data';
-import { exportZip, importZip } from './backup';
+import { exportZip, exportPromotionZip, importZip } from './backup';
 import { renderMarksheet } from './templateRenderer';
 import type { AppData, ExamKey, Student } from './types';
 import './style.css';
@@ -117,9 +117,11 @@ function App() {
   const saveSequence = useRef(0);
   const [notice, setNotice] = useState('');
   const [cropDraft, setCropDraft] = useState<CropDraft | null>(null);
+  const [workspaces, setWorkspaces] = useState<Array<{id:string;data:AppData;updatedAt:string}>>([]);
   useEffect(() => {
-    Promise.all([loadData(), fetch('/marksheet-multi-exam.html').then(r => r.text()), fetch('/marksheet-single-exam.html').then(r => r.text())]).then(([saved, html, singleHtml]) => {
+    Promise.all([loadData(), fetch('/marksheet-multi-exam.html').then(r => r.text()), fetch('/marksheet-single-exam.html').then(r => r.text())]).then(async ([saved, html, singleHtml]) => {
       setData(saved ? normalizeData(saved) : createDefaultData());
+      setWorkspaces(await listWorkspaces());
       setTemplate(html); setSingleTemplate(singleHtml); setStatus(saved ? 'Loaded from this browser' : 'Ready · data saves locally');
     }).catch(() => setStatus('Ready · local data not loaded'));
   }, []);
@@ -129,16 +131,31 @@ function App() {
     setStatus('Editing…');
     const id = window.setTimeout(() => {
       setStatus('Saving…');
-      saveData(data).then(() => { if (sequence === saveSequence.current) setStatus('Saved locally'); }).catch(() => { if (sequence === saveSequence.current) setStatus('Save failed — retry by editing or pressing Ctrl+S'); });
+      saveData(data).then(async () => { setWorkspaces(await listWorkspaces()); if (sequence === saveSequence.current) setStatus('Saved locally'); }).catch(() => { if (sequence === saveSequence.current) setStatus('Save failed — retry by editing or pressing Ctrl+S'); });
     }, 500);
     return () => window.clearTimeout(id);
   }, [data, template]);
+  const switchWorkspace = async (id: string) => {
+    const workspace = await loadWorkspace(id);
+    if (!workspace) { alert('The selected class workspace could not be found.'); return; }
+    const normalized = normalizeData(workspace);
+    await saveData(normalized);
+    setData(normalized); setSelectedStudent(normalized.students[0]?.studentId || '');
+    setNotice(`Opened Class ${normalized.classInfo.className}, session ${normalized.academicSession}.`);
+  };
   const currentStudent = data.students.find(s => s.studentId === (selectedStudent || data.students[0]?.studentId));
   const activeTemplate = data.marksheetSettings.reportExams?.length === 1 && singleTemplate ? singleTemplate : template;
   const setSchool = (field: 'name' | 'address' | 'established' | 'registrationNumber' | 'affiliation', value: string) => setData(d => ({ ...d, school: { ...d.school, [field]: value } }));
-  const updateStudent = (id: string, field: string, value: any) => setData(d => ({ ...d, students: d.students.map(s => s.studentId === id ? { ...s, [field]: value } : s) }));
+  const updateStudent = (id: string, field: string, value: any) => {
+    if (field === 'roll') {
+      const duplicate = data.students.some(student => student.studentId !== id && student.roll.trim().toLowerCase() === String(value).trim().toLowerCase());
+      if (duplicate) { setNotice(`Roll ${value} is already used in Class ${data.classInfo.className}, session ${data.academicSession}. The composite key is session + class + roll.`); return; }
+    }
+    setData(d => ({ ...d, students: d.students.map(s => s.studentId === id ? { ...s, [field]: value } : s) }));
+  };
   const addStudent = () => {
-    const s = blankStudent(data.students.length + 1, data.subjects);
+    let nextRoll = 1; while (data.students.some(student => student.roll.trim() === String(nextRoll))) nextRoll++;
+    const s = blankStudent(nextRoll, data.subjects);
     setData(d => ({ ...d, students: [...d.students, s], results: Object.fromEntries(exams.map(k => [k, [...d.results[k], emptyMarks(s, d.subjects)]])) as AppData['results'] }));
     setSelectedStudent(s.studentId);
   };
@@ -146,6 +163,48 @@ function App() {
     if (!confirm('Delete this student and their marks?')) return;
     setData(d => ({ ...d, students: d.students.filter(s => s.studentId !== id), results: Object.fromEntries(exams.map(k => [k, d.results[k].filter(m => m.studentId !== id)])) as AppData['results'] }));
     if (selectedStudent === id) setSelectedStudent('');
+  };
+  const resetMarks = async () => {
+    if (!confirm(`Reset all examination marks for Class ${data.classInfo.className}, session ${data.academicSession}? Student details, photos, roll numbers and attendance will be preserved.`)) return;
+    try {
+      setBusy(true);
+      await exportZip(data, template, '', 'pre-reset');
+      if (!confirm('The verified class backup download has been started. Confirm that you have saved the ZIP file before clearing marks.')) return;
+      const cleared = { ...data, results: { pa1: [], pa2: [], hy: [], pa3: [], pa4: [], final: [] } };
+      await saveData(cleared); setData(cleared); setNotice('All examination marks were reset. Student details and attendance were preserved.');
+    } catch (error) { alert(error instanceof Error ? error.message : 'Could not create and verify the backup. Marks were not reset.'); }
+    finally { setBusy(false); }
+  };
+  const resetStudents = async () => {
+    if (!confirm(`Reset all student records for Class ${data.classInfo.className}, session ${data.academicSession}? This also removes their marks, attendance and photos. School profile and marksheet settings will remain.`)) return;
+    try {
+      setBusy(true);
+      await exportZip(data, template, '', 'pre-reset');
+      if (!confirm('The verified class backup download has been started. Confirm that you have saved the ZIP file before deleting student records.')) return;
+      const phrase = prompt(`Type RESET CLASS ${data.classInfo.className} to permanently remove this class/session student data.`);
+      if (phrase !== `RESET CLASS ${data.classInfo.className}`) { setNotice('Student reset cancelled. No records were deleted.'); return; }
+      const cleared: AppData = { ...data, students: [], results: { pa1: [], pa2: [], hy: [], pa3: [], pa4: [], final: [] }, classInfo: { ...data.classInfo, totalWorkingDays: 0 } };
+      await saveData(cleared); setData(cleared); setSelectedStudent(''); setNotice('Student records, marks and attendance were reset. School and marksheet settings were preserved.');
+    } catch (error) { alert(error instanceof Error ? error.message : 'Could not create and verify the backup. Student data was not reset.'); }
+    finally { setBusy(false); }
+  };
+  const promoteStudents = async () => {
+    if (!data.students.length) { alert('There are no students to promote.'); return; }
+    const currentClassNumber = Number(String(data.classInfo.className).match(/\d+/)?.[0]);
+    const suggestedClass = Number.isFinite(currentClassNumber) && currentClassNumber > 0 ? String(currentClassNumber + 1) : '';
+    const targetClass = prompt('Promote students to which class?', suggestedClass);
+    if (!targetClass?.trim()) return;
+    const years = data.academicSession.match(/(\d{4})\s*[-–/]\s*(\d{2,4})/);
+    const suggestedSession = years ? `${Number(years[1]) + 1}-${String(Number(years[2].length === 2 ? `20${years[2]}` : years[2]) + 1).slice(-2)}` : data.academicSession;
+    const targetSession = prompt('New academic session?', suggestedSession);
+    if (!targetSession?.trim()) return;
+    const finalTotal = (studentId: string) => { const row = data.results.final.find(mark => mark.studentId === studentId); return data.subjects.reduce((sum, subject) => sum + (Number(row?.[subject.id]) || 0), 0); };
+    const ranked = [...data.students].sort((a,b) => finalTotal(b.studentId)-finalTotal(a.studentId) || ((b.attendance.workingDays ? b.attendance.daysPresent/b.attendance.workingDays : 0) - (a.attendance.workingDays ? a.attendance.daysPresent/a.attendance.workingDays : 0)) || a.roll.localeCompare(b.roll, undefined, {numeric:true}));
+    const preview = ranked.slice(0, 12).map((student,index)=>`${index+1}. ${student.name} — Final: ${finalTotal(student.studentId)}, Attendance: ${student.attendance.workingDays ? (student.attendance.daysPresent/student.attendance.workingDays*100).toFixed(1) : '0.0'}%`).join('\n');
+    if (!confirm(`Promotion preview\n\nFrom: Class ${data.classInfo.className} / ${data.academicSession}\nTo: Class ${targetClass} / ${targetSession}\nStudents: ${ranked.length}\n\nRanking: Final marks → attendance → previous roll\nNew roll numbers: 1 to ${ranked.length}\n\n${preview}${ranked.length>12?'\n…':''}\n\nGenerate promote_ ZIP? Previous marks and attendance will NOT be included.`)) return;
+    try { setBusy(true); await exportPromotionZip(data, template, targetClass.trim(), targetSession.trim()); setNotice(`Promotion ZIP generated for Class ${targetClass}, session ${targetSession}. It contains student details/photos and new roll numbers, without marks or attendance.`); }
+    catch (error) { alert(error instanceof Error ? error.message : 'Could not generate promotion ZIP.'); }
+    finally { setBusy(false); }
   };
   const handleStudentGridKeyDown = (event: React.KeyboardEvent<HTMLInputElement | HTMLSelectElement>, row: number, col: number) => {
     if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 's') {
@@ -192,8 +251,19 @@ function App() {
       const selectedSheetName = wb.SheetNames.find(name => name.trim().toLowerCase() === preferredSheet) || wb.SheetNames[0];
       const firstSheet = wb.Sheets[selectedSheetName];
       if (!firstSheet) throw new Error('The workbook has no worksheet.');
-      const rows = XLSX.utils.sheet_to_json<Record<string, any>>(firstSheet, { defval: '' });
-      if (!rows.length) throw new Error('No data rows found in the first worksheet.');
+      const matrix = XLSX.utils.sheet_to_json<any[]>(firstSheet, { header: 1, defval: '', blankrows: true });
+      const normalizeHeader = (value: unknown) => String(value ?? '').toLowerCase().trim().replace(/[ _-]/g, '');
+      const requiredHeaderSets = selectedMode === 'students'
+        ? [['roll','rollno','rollnumber'], ['name','studentname']]
+        : [['roll','rollno','rollnumber']];
+      const headerIndex = matrix.findIndex(row => {
+        const values = row.map(normalizeHeader);
+        return requiredHeaderSets.every(aliases => aliases.some(alias => values.includes(alias))) && (selectedMode === 'students' ? values.some(v => ['name','studentname'].includes(v)) : values.some(v => data.subjects.some(subject => normalizeHeader(subject.name) === v || normalizeHeader(subject.id) === v)));
+      });
+      if (headerIndex < 0) throw new Error('Could not detect the column header row. Required columns include Roll and Name (student import), or Roll and Exam (result import). A Class column is recommended.');
+      const headers = (matrix[headerIndex] as unknown[]).map((value, index) => String(value ?? '').trim() || `__column_${index}`);
+      const rows = matrix.slice(headerIndex + 1).filter(row => row.some(value => String(value ?? '').trim() !== '')).map(values => Object.fromEntries(headers.map((header, index) => [header, values[index] ?? ''])) as Record<string, any>);
+      if (!rows.length) throw new Error('No data rows found below the detected header row.');
       const normalizeKey = (value: string) => value.toLowerCase().trim().replace(/[ _-]/g, '');
       const key = (obj: Record<string, any>, names: string[]) => {
         const wanted = names.map(normalizeKey);
@@ -221,115 +291,176 @@ function App() {
           const rawGender = String(key(r, ['gender','sex']) ?? '').trim();
           const genderKey = rawGender.toLowerCase();
           s.gender = !rawGender ? '' : ['m','male','boy'].includes(genderKey) ? 'Male' : ['f','female','girl'].includes(genderKey) ? 'Female' : ['other','others'].includes(genderKey) ? 'Other' : rawGender;
-          return { student: s, session: String(key(r, ['session','academicsession']) ?? '').trim(), className: String(key(r, ['class','classname','grade']) ?? '').trim(), section: String(key(r, ['section','sec']) ?? '').trim(), row: i + 2 };
+          return { student: s, session: String(key(r, ['session','academicsession']) ?? '').trim(), className: String(key(r, ['class','classname','grade']) ?? '').trim(), section: String(key(r, ['section','sec']) ?? '').trim(), row: headerIndex + i + 2 };
         });
         const errors: string[] = [];
-        imported.forEach(item => {
-          if (!item.student.roll) errors.push(`Row ${item.row}: Roll is required.`);
-          if (!item.student.name) errors.push(`Row ${item.row}: Name is required.`);
-        });
-        const groups = new Set(imported.map(item => [item.session || data.academicSession, item.className || data.classInfo.className, data.settings.sectionEnabled ? item.section : ''].join('|')));
-        if (groups.size > 1) errors.push('This version stores one session/class/section group at a time. Split this file by session, class and (when enabled) section, then import each group separately.');
-        const seenRolls = new Set<string>();
+        imported.forEach(item => { if (!item.student.roll) errors.push(`Row ${item.row}: Roll is required.`); if (!item.student.name) errors.push(`Row ${item.row}: Name is required.`); });
         const invalidRows = new Set<number>();
-        imported.forEach(item => {
-          const rollKey = item.student.roll.trim().toLowerCase();
-          if (!item.student.roll || !item.student.name) invalidRows.add(item.row);
-          if (rollKey && seenRolls.has(rollKey)) { errors.push(`Row ${item.row}: Duplicate roll number ${item.student.roll}.`); invalidRows.add(item.row); }
-          if (rollKey) seenRolls.add(rollKey);
-        });
+        imported.forEach(item => { if (!item.student.roll || !item.student.name) invalidRows.add(item.row); });
         const valid = imported.filter(item => !invalidRows.has(item.row));
-        if (!valid.length || groups.size > 1) {
-          alert(`Student import validation failed.\n\n${errors.slice(0, 15).join('\n')}${errors.length > 15 ? `\n…and ${errors.length - 15} more issue(s).` : ''}`);
-          return;
+        if (!valid.length) throw new Error(`No valid student rows found.\n${errors.slice(0, 15).join('\n')}`);
+        const compositeKeys = new Set<string>();
+        valid.forEach(item => {
+          const composite = `${item.session || data.academicSession}|${item.className || data.classInfo.className}|${item.student.roll.trim().toLowerCase()}`;
+          if (compositeKeys.has(composite)) throw new Error(`Duplicate composite key found: session + class + roll (${composite.replace(/\|/g, ' / ')}).`);
+          compositeKeys.add(composite);
+        });
+        const groupMap = new Map<string, typeof valid>();
+        valid.forEach(item => {
+          const groupSession = item.session || data.academicSession;
+          const groupClass = item.className || data.classInfo.className;
+          const groupSection = data.settings.sectionEnabled ? (item.section || '') : '';
+          const groupKey = [groupSession, groupClass, groupSection].join('|');
+          groupMap.set(groupKey, [...(groupMap.get(groupKey) || []), item]);
+        });
+        const groups = [...groupMap.entries()];
+        const classNames = [...new Set(valid.map(item => item.className || data.classInfo.className))];
+        if (classNames.length > 1 && !data.settings.allowMultipleClassImport) {
+          throw new Error(`Multiple classes detected in this file: ${classNames.join(', ')}.\n\nThe setting "Allowed multiple class import" is currently unchecked. Enable it in Settings to permit multi-class imports, or split the file into one class per file.`);
         }
-        const session = valid[0].session || data.academicSession;
-        const className = valid[0].className || data.classInfo.className;
-        const sectionValue = data.settings.sectionEnabled ? (valid[0].section || '') : '';
-        const subjects = subjectsForClass(className);
-        const existingByRoll = new Map<string, Student>(data.students.filter(st => st.roll.trim()).map(st => [st.roll.trim().toLowerCase(), st] as [string, Student]));
-        const importedStudents = valid.map(item => {
-          const existing = existingByRoll.get(item.student.roll.trim().toLowerCase());
-          return existing ? { ...existing, ...item.student, studentId: existing.studentId, photo: existing.photo, attendance: existing.attendance, remarks: existing.remarks } : item.student;
-        });
-        const existingCount = importedStudents.filter(st => existingByRoll.has(st.roll.trim().toLowerCase())).length;
-        const duplicateNotice = errors.length ? `\n\nWarnings/errors (these rows will not be imported if invalid):\n${errors.slice(0, 10).join('\n')}` : '';
-        const confirmed = confirm(`Student import review\n\nRows in file: ${rows.length}\nValid rows: ${valid.length}\nExisting roll matches to update: ${existingCount}\nNew student records: ${valid.length - existingCount}\nSession: ${session}\nClass: ${className}${data.settings.sectionEnabled ? `\nSection: ${sectionValue || '(blank)'}` : ''}\n\nImporting replaces the active student list for this class group. Existing matching students retain their internal Student ID and photo.${duplicateNotice}\n\nContinue?`);
-        if (!confirmed) return;
-        setData(d => {
-          const nextResults = Object.fromEntries(exams.map(k => [k, importedStudents.map(st => {
-            const old = d.results[k].find(m => m.studentId === st.studentId || (m.roll && m.roll === st.roll));
-            return { ...emptyMarks(st, subjects), ...(old || {}), studentId: st.studentId, roll: st.roll };
-          })])) as AppData['results'];
-          return normalizeData({ ...d, academicSession: session, classInfo: { ...d.classInfo, className, section: sectionValue }, subjects, students: importedStudents, results: nextResults });
-        });
-        setSelectedStudent(importedStudents[0]?.studentId || '');
-        setNotice(`Imported ${valid.length} student records. ${errors.length ? `${errors.length} validation warning(s) were found; invalid rows were excluded.` : ''}`);
+        if (classNames.length > 1 && !confirm(`Multiple classes detected.\n\n${classNames.map(name => `Class ${name}: ${valid.filter(item => (item.className || data.classInfo.className) === name).length} student(s)`).join('\n')}\n\nEach class will be saved in a separate workspace. Continue?`)) return;
+        const hasDifferentClass = classNames.some(name => name !== data.classInfo.className);
+        if (classNames.length === 1 && hasDifferentClass && !confirm(`Class mismatch detected.\n\nSelected in app: Class ${data.classInfo.className}\nFound in file: Class ${classNames[0]}\n\nThe class in the file has priority. Import into Class ${classNames[0]}?`)) return;
+        let hasStudentConflicts = false;
+        for (const [groupKey, groupRows] of groups) {
+          const [session, className, sectionValue] = groupKey.split('|');
+          const existingWorkspace = await loadWorkspace(`workspace:${encodeURIComponent(session)}:${encodeURIComponent(className)}:${encodeURIComponent(sectionValue)}`);
+          const existingRolls = new Set((existingWorkspace?.students || (className === data.classInfo.className && session === data.academicSession ? data.students : [])).map(st => st.roll.trim().toLowerCase()));
+          if (groupRows.some(item => existingRolls.has(item.student.roll.trim().toLowerCase()))) { hasStudentConflicts = true; break; }
+        }
+        let strategy = '1';
+        if (hasStudentConflicts) {
+          const strategyRaw = prompt('Existing student conflicts detected. Choose import policy:\n1 = Preserve existing values and add new students (default)\n2 = Update matching student details\n3 = Replace the student list for each imported class (backup required)\n4 = Skip rows matching existing students', '1') || '1';
+          strategy = ['1','2','3','4'].includes(strategyRaw) ? strategyRaw : '1';
+        }
+        const prepared: AppData[] = [];
+        let inserted = 0, updated = 0, preserved = 0, skipped = 0;
+        for (const [groupKey, groupRows] of groups) {
+          const [session, className, sectionValue] = groupKey.split('|');
+          const subjects = subjectsForClass(className);
+          const groupBase = await loadWorkspace(`workspace:${encodeURIComponent(session)}:${encodeURIComponent(className)}:${encodeURIComponent(sectionValue)}`);
+          const base = normalizeData(groupBase || { ...data, academicSession: session, classInfo: { ...data.classInfo, className, section: sectionValue }, subjects, students: [], results: Object.fromEntries(exams.map(k=>[k,[]])) });
+          const existingByRoll = new Map<string, Student>(base.students.filter(st => st.roll.trim()).map(st => [st.roll.trim().toLowerCase(), st] as [string, Student]));
+          const incoming = groupRows.map(item => item.student);
+          const seen = new Set<string>();
+          for (const student of incoming) { const k = student.roll.trim().toLowerCase(); if (seen.has(k)) throw new Error(`Duplicate roll ${student.roll} found in Class ${className}, session ${session}.`); seen.add(k); }
+          const conflicts = incoming.filter(st => existingByRoll.has(st.roll.trim().toLowerCase()));
+          if (strategy === '3' && conflicts.length) {
+            await exportZip(base, template, '', 'pre-replace');
+            if (!confirm(`A pre-replacement backup download was started for Class ${className}, session ${session}. Confirm it is saved before replacing this class roster.`)) throw new Error('Replacement cancelled.');
+          }
+          const importedStudents: Student[] = [];
+          for (const student of incoming) {
+            const existing = existingByRoll.get(student.roll.trim().toLowerCase());
+            if (!existing) { importedStudents.push(student); inserted++; continue; }
+            if (strategy === '4') { skipped++; importedStudents.push(existing); continue; }
+            if (strategy === '1') { preserved++; importedStudents.push(existing); continue; }
+            const updatedStudent = { ...existing, ...student, studentId: existing.studentId, photo: existing.photo, attendance: existing.attendance, remarks: existing.remarks };
+            importedStudents.push(updatedStudent); updated++;
+          }
+          const finalStudents = strategy === '3' ? incoming.map(st => { const old = existingByRoll.get(st.roll.trim().toLowerCase()); return old ? { ...st, studentId: old.studentId, photo: old.photo, attendance: old.attendance, remarks: old.remarks } : st; }) : [...base.students.filter(old => !incoming.some(st => st.roll.trim().toLowerCase() === old.roll.trim().toLowerCase())), ...importedStudents];
+          const nextResults = Object.fromEntries(exams.map(k => [k, finalStudents.map(st => { const old = base.results[k].find(m => m.studentId === st.studentId); return { ...emptyMarks(st, subjects), ...(old || {}), studentId: st.studentId, roll: st.roll }; })])) as AppData['results'];
+          const next = normalizeData({ ...base, academicSession: session, classInfo: { ...base.classInfo, className, section: sectionValue }, subjects, students: finalStudents, results: nextResults });
+          await saveWorkspace(next); prepared.push(next);
+        }
+        const active = prepared.find(item => item.classInfo.className === data.classInfo.className && item.academicSession === data.academicSession) || prepared[0];
+        await saveData(active); setData(active); setSelectedStudent(active.students[0]?.studentId || ''); setWorkspaces(await listWorkspaces());
+        setNotice(`Student import completed across ${prepared.length} class/session workspace(s). Added ${inserted}, updated ${updated}, preserved ${preserved}, skipped ${skipped}.`);
       } else {
         if (!selectedUploadExams.length) throw new Error('Select at least one exam checkbox before importing results.');
         const selected: ExamKey[] = selectedUploadExams;
         const hasExamColumn = rows.some(r => String(key(r, ['exam','examname','examtype','assessment']) ?? '').trim() !== '');
         if (!hasExamColumn && selected.length !== 1) throw new Error('This file has no Exam column. Select exactly one exam, or add an Exam column with PA1, PA2, HY, PA3, PA4, or FINAL values.');
-        const planned: Record<ExamKey, AppData['results'][ExamKey]> = { pa1: [], pa2: [], hy: [], pa3: [], pa4: [], final: [] };
-        const issues: string[] = [];
-        let skippedUnselected = 0;
-        let updatedCount = 0;
-        let validCount = 0;
-        const seenResultRows = new Set<string>();
-        const foundExams = new Set<ExamKey>();
-        rows.forEach((r, index) => {
-          const rowNumber = index + 2;
-          const rowExam: ExamKey | undefined = hasExamColumn ? examFromValue(key(r, ['exam','examname','examtype','assessment'])) : selected[0];
-          if (!rowExam) { issues.push(`Row ${rowNumber}: Unknown or missing exam name.`); return; }
-          if (!selected.includes(rowExam)) { skippedUnselected++; return; }
-          foundExams.add(rowExam);
-          const rowSession = String(key(r, ['session','academicsession']) ?? '').trim();
-          const rowClass = String(key(r, ['class','classname','grade']) ?? '').trim();
-          const rowSection = String(key(r, ['section','sec']) ?? '').trim();
-          if (rowSession && rowSession !== data.academicSession) { issues.push(`Row ${rowNumber}: Session ${rowSession} does not match active session ${data.academicSession}.`); return; }
-          if (rowClass && rowClass !== data.classInfo.className) { issues.push(`Row ${rowNumber}: Class ${rowClass} does not match active class ${data.classInfo.className}.`); return; }
-          if (data.settings.sectionEnabled && rowSection && rowSection !== data.classInfo.section) { issues.push(`Row ${rowNumber}: Section ${rowSection} does not match active section ${data.classInfo.section}.`); return; }
-          const roll = String(key(r, ['roll','rollno','rollnumber']) ?? '').trim();
-          const student = data.students.find(st => st.roll.trim().toLowerCase() === roll.toLowerCase());
-          if (!student) { issues.push(`Row ${rowNumber}: Student roll ${roll || '(blank)'} was not found.`); return; }
-          const uniqueRowKey = `${rowExam}:${student.studentId}`;
-          if (seenResultRows.has(uniqueRowKey)) { issues.push(`Row ${rowNumber}: Duplicate result row for ${rowExam.toUpperCase()}, roll ${roll}.`); return; }
-          seenResultRows.add(uniqueRowKey);
-          const existing = data.results[rowExam].find(m => m.studentId === student.studentId) || emptyMarks(student, data.subjects);
-          const next: any = { ...existing, studentId: student.studentId, roll: student.roll };
-          let rowValid = true;
-          data.subjects.forEach(subject => {
-            const rawValue = key(r, [subject.id, subject.name, `${subject.name} marks`, `${subject.name} mark`]);
-            if (rawValue === '' || rawValue === null || rawValue === undefined) return;
-            const value = Number(rawValue);
-            if (!Number.isFinite(value) || value < 0 || value > data.exams[rowExam].maxMarks) {
-              issues.push(`Row ${rowNumber} (${rowExam.toUpperCase()}, roll ${roll}): ${subject.name} must be between 0 and ${data.exams[rowExam].maxMarks}.`);
-              rowValid = false;
-            } else next[subject.id] = value;
-          });
-          if (!rowValid) return;
-          if (data.results[rowExam].some(m => m.studentId === student.studentId)) updatedCount++;
-          planned[rowExam].push(next);
-          validCount++;
+        const groupMap = new Map<string, Array<{ row: Record<string, any>; rowNumber: number }>>();
+        rows.forEach((row, index) => {
+          const session = String(key(row, ['session','academicsession']) ?? '').trim() || data.academicSession;
+          const className = String(key(row, ['class','classname','grade']) ?? '').trim() || data.classInfo.className;
+          const sectionValue = data.settings.sectionEnabled ? (String(key(row, ['section','sec']) ?? '').trim() || data.classInfo.section || '') : '';
+          const groupKey = [session, className, sectionValue].join('|');
+          groupMap.set(groupKey, [...(groupMap.get(groupKey) || []), { row, rowNumber: headerIndex + index + 2 }]);
         });
-        if (hasExamColumn) selected.filter(k => !foundExams.has(k)).forEach(k => issues.push(`No rows for selected exam ${data.exams[k].name} were found in the file.`));
-        if (!validCount) throw new Error(`No valid result rows were found.${skippedUnselected ? ` ${skippedUnselected} row(s) belonged to unchecked exams.` : ''}\n${issues.slice(0, 12).join('\n')}`);
-        const examSummary = selected.filter(k => planned[k].length).map(k => `${data.exams[k].name}: ${planned[k].length} row(s)`).join('\n');
-        const issueSummary = issues.length ? `\n\nIssues (${issues.length}):\n${issues.slice(0, 12).join('\n')}${issues.length > 12 ? `\n…and ${issues.length - 12} more.` : ''}` : '';
-        const confirmed = confirm(`Result import review\n\nFile rows: ${rows.length}\nValid rows: ${validCount}\nExisting student results to update: ${updatedCount}\nRows skipped because exam was not selected: ${skippedUnselected}\n\n${examSummary}${issueSummary}\n\nOnly the selected exams will be changed. Continue?`);
-        if (!confirmed) return;
-        setData(d => {
-          const nextResults = { ...d.results };
+        const groups = [...groupMap.entries()];
+        const classes = [...new Set(groups.map(([group]) => group.split('|')[1]))];
+        if (classes.length === 1 && classes[0] !== data.classInfo.className && !confirm(`Class mismatch detected.\n\nSelected in app: Class ${data.classInfo.className}\nFound in file: Class ${classes[0]}\n\nThe class in the file has priority. The result file will be applied to the saved Class ${classes[0]} workspace.`)) return;
+        if (classes.length > 1 && !data.settings.allowMultipleClassImport) throw new Error(`Multiple classes detected: ${classes.join(', ')}. Enable "Allowed multiple class import" in Settings or split the file by class.`);
+        if (classes.length > 1 && !confirm(`Multiple classes detected in result file:\n${classes.map(name => `Class ${name}: ${rows.filter(r => String(key(r,['class','classname','grade']) || data.classInfo.className).trim()===name).length} row(s)`).join('\n')}\n\nEach class will be imported into its own saved workspace. Continue?`)) return;
+        const strategyRaw = prompt('How should existing examination marks be handled?\n1 = Preserve existing marks (default)\n2 = Update matching marks from this file\n3 = Replace selected exam data for these class/session groups (backup required)\n4 = Skip rows that already have marks', '2') || '2';
+        const strategy = ['1','2','3','4'].includes(strategyRaw) ? strategyRaw : '2';
+        let totalValid = 0, totalUpdated = 0, totalSkipped = 0, totalIssues = 0;
+        const issueLines: string[] = [];
+        const prepared: AppData[] = [];
+        for (const [groupKey, groupRows] of groups) {
+          const [session, className, sectionValue] = groupKey.split('|');
+          const workspaceKey = `workspace:${encodeURIComponent(session)}:${encodeURIComponent(className)}:${encodeURIComponent(sectionValue)}`;
+          const stored = await loadWorkspace(workspaceKey);
+          const target = normalizeData(stored || (className === data.classInfo.className && session === data.academicSession
+            ? data
+            : { ...data, academicSession: session, classInfo: { ...data.classInfo, className, section: sectionValue }, subjects: subjectsForClass(className), students: [], results: Object.fromEntries(exams.map(k=>[k,[]])) }));
+          if (!stored && (className !== data.classInfo.className || session !== data.academicSession)) throw new Error(`Class ${className}, session ${session} has no saved student workspace. Import student details or open that workspace before importing results.`);
+          const planned: Record<ExamKey, AppData['results'][ExamKey]> = { pa1: [], pa2: [], hy: [], pa3: [], pa4: [], final: [] };
+          const seenResultRows = new Set<string>();
+          const foundExams = new Set<ExamKey>();
+          for (const { row, rowNumber } of groupRows) {
+            const rowExam: ExamKey | undefined = hasExamColumn ? examFromValue(key(row, ['exam','examname','examtype','assessment'])) : selected[0];
+            if (!rowExam) { issueLines.push(`Row ${rowNumber}: Unknown or missing exam name.`); continue; }
+            if (!selected.includes(rowExam)) { totalSkipped++; continue; }
+            foundExams.add(rowExam);
+            const roll = String(key(row, ['roll','rollno','rollnumber']) ?? '').trim();
+            const student = target.students.find(st => st.roll.trim().toLowerCase() === roll.toLowerCase());
+            if (!student) { issueLines.push(`Row ${rowNumber}: Student roll ${roll || '(blank)'} was not found in Class ${className}.`); continue; }
+            const uniqueRowKey = `${rowExam}:${student.studentId}`;
+            if (seenResultRows.has(uniqueRowKey)) { issueLines.push(`Row ${rowNumber}: Duplicate result row for ${rowExam.toUpperCase()}, roll ${roll}.`); continue; }
+            seenResultRows.add(uniqueRowKey);
+            const existing = target.results[rowExam].find(mark => mark.studentId === student.studentId) || emptyMarks(student, target.subjects);
+            const next: any = { ...existing, studentId: student.studentId, roll: student.roll };
+            let rowValid = true;
+            target.subjects.forEach(subject => {
+              const rawValue = key(row, [subject.id, subject.name, `${subject.name} marks`, `${subject.name} mark`]);
+              if (rawValue === '' || rawValue === null || rawValue === undefined) return;
+              const value = Number(rawValue);
+              if (!Number.isFinite(value) || value < 0 || value > target.exams[rowExam].maxMarks) { issueLines.push(`Row ${rowNumber} (${rowExam.toUpperCase()}, roll ${roll}): ${subject.name} must be between 0 and ${target.exams[rowExam].maxMarks}.`); rowValid = false; }
+              else next[subject.id] = value;
+            });
+            if (!rowValid) continue;
+            if (target.results[rowExam].some(mark => mark.studentId === student.studentId)) totalUpdated++;
+            planned[rowExam].push(next); totalValid++;
+          }
+          if (hasExamColumn) selected.filter(k => !foundExams.has(k)).forEach(k => issueLines.push(`Class ${className}: No rows for selected exam ${target.exams[k].name} were found.`));
+          if (strategy === '3') {
+            await exportZip(target, template, '', 'pre-replace');
+            if (!confirm(`A verified backup download was started for Class ${className}, session ${session}. Confirm that it is saved before replacing selected exam data.`)) throw new Error('Result replacement cancelled.');
+          }
+          const nextResults = { ...target.results };
           for (const examKey of selected) {
             const incoming = planned[examKey];
-            if (!incoming.length) continue;
-            const incomingById = new Map<string, (typeof incoming)[number]>(incoming.map(mark => [mark.studentId, mark] as [string, (typeof incoming)[number]]));
-            nextResults[examKey] = d.results[examKey].map(old => { const incomingMark = incomingById.get(old.studentId); return incomingMark ? { ...old, ...incomingMark } : old; });
-            incoming.forEach(mark => { if (!nextResults[examKey].some(old => old.studentId === mark.studentId)) nextResults[examKey].push(mark); });
+            if (strategy === '3') nextResults[examKey] = [];
+            const incomingById = new Map(incoming.map(mark => [mark.studentId, mark] as [string, (typeof incoming)[number]]));
+            nextResults[examKey] = nextResults[examKey].map(old => {
+              const incomingMark = incomingById.get(old.studentId);
+              if (!incomingMark) return old;
+              if (strategy === '4') { totalSkipped++; return old; }
+              if (strategy === '1') {
+                const preserved = { ...old } as typeof old;
+                target.subjects.forEach(subject => { if (preserved[subject.id] === null || preserved[subject.id] === undefined || preserved[subject.id] === '') preserved[subject.id] = incomingMark[subject.id] ?? null; });
+                totalSkipped++;
+                return preserved;
+              }
+              return { ...old, ...incomingMark };
+            });
+            incoming.forEach(mark => {
+              const exists = nextResults[examKey].some(old => old.studentId === mark.studentId);
+              if (!exists) nextResults[examKey].push(mark);
+            });
           }
-          return { ...d, results: nextResults };
-        });
-        setNotice(`Imported ${validCount} result row(s). ${skippedUnselected ? `${skippedUnselected} row(s) from unselected exams were ignored. ` : ''}${issues.length ? `${issues.length} row issue(s) were skipped.` : ''}`);
+          const next = { ...target, results: nextResults };
+          await saveWorkspace(next); prepared.push(next);
+        }
+        if (!totalValid) throw new Error(`No valid result rows were imported.\n${issueLines.slice(0, 15).join('\n')}`);
+        const active = prepared.find(item => item.classInfo.className === data.classInfo.className && item.academicSession === data.academicSession) || prepared[0];
+        await saveData(active); setData(active); setWorkspaces(await listWorkspaces());
+        totalIssues = issueLines.length;
+        setNotice(`Result import completed for ${prepared.length} class/session workspace(s). Valid rows: ${totalValid}; existing rows reviewed: ${totalUpdated}; skipped: ${totalSkipped}; issues: ${totalIssues}.`);
+        if (issueLines.length) alert(`Some result rows need attention:\n\n${issueLines.slice(0, 15).join('\n')}${issueLines.length>15?'\n…':''}`);
       }
     } catch (e) { alert(e instanceof Error ? e.message : 'Unable to import file.'); }
   };
@@ -337,8 +468,8 @@ function App() {
     if (!file) return;
     try {
       const restored = await importZip(file);
-      if (!confirm(`Restore ${restored.students.length} students for Class ${restored.classInfo.className}-${restored.classInfo.section}? This replaces the current local dataset.`)) return;
-      setData(restored); setNotice('ZIP backup restored.');
+      if (!confirm(`Import ${restored.students.length} students for Class ${restored.classInfo.className}-${restored.classInfo.section}, session ${restored.academicSession}? This opens that class workspace. Existing workspaces are retained. If this is a promote_ package, it contains new-session student details and roll numbers but no previous marks or attendance.`)) return;
+      await saveData(restored); setData(restored); setSelectedStudent(restored.students[0]?.studentId || ''); setWorkspaces(await listWorkspaces()); setNotice('ZIP data imported and saved as the active class workspace.');
     } catch (e) { alert(e instanceof Error ? e.message : 'Unable to restore ZIP.'); }
   };
   const uploadAsset = async (file: File | undefined, kind: 'logoLeft' | 'logoRight' | 'watermark') => {
@@ -433,15 +564,15 @@ function App() {
   return <div className="app-shell">
     <aside className="sidebar">
       <div className="brand"><div className="brand-mark"><School size={22}/></div><div><strong>Marksheet Studio</strong><small>Class result workspace</small></div></div>
-      <div className="session-card"><span>ACADEMIC SESSION</span><input value={data.academicSession} onChange={e=>setData(d=>({...d,academicSession:e.target.value}))}/><div className="class-select"><label>Class</label><input value={data.classInfo.className} onChange={e=>{const className=e.target.value;setData(d=>{const oldClass=d.classInfo.className;const configs={...d.classSubjectConfigs,[oldClass]:d.subjects};const subjects=configs[className] || subjectsForClass(className);configs[className]=subjects;return {...d,classInfo:{...d.classInfo,className},classSubjectConfigs:configs,subjects,students:d.students.map(st=>({...st,remarks:{...st.remarks,subjects:{...Object.fromEntries(subjects.map(sub=>[sub.id,''])),...st.remarks.subjects}}})),results:Object.fromEntries(exams.map(k=>[k,d.results[k].map(m=>({...m,...Object.fromEntries(subjects.map(sub=>[sub.id,m[sub.id]??null]))}))])) as AppData['results']}})}}/>{data.settings.sectionEnabled && <><label>Section</label><input value={data.classInfo.section} onChange={e=>setData(d=>({...d,classInfo:{...d.classInfo,section:e.target.value}}))}/></>}</div></div>
-      <nav>{nav.map(([id,label,Icon])=><button key={id} className={section===id?'nav-item active':'nav-item'} onClick={()=>setSection(id)}><Icon size={18}/><span>{label}</span></button>)}</nav>
+      <div className="session-card"><span>ACADEMIC SESSION</span><input value={data.academicSession} disabled={data.students.length>0} title={data.students.length>0 ? "Create a backup and reset students before changing the session." : "Academic session"} onChange={e=>setData(d=>({...d,academicSession:e.target.value}))}/><div className="class-select"><label>Class</label><input value={data.classInfo.className} disabled={data.students.length>0} title={data.students.length>0 ? "Reset student data after creating a backup before changing class." : "Class identity"} onChange={e=>{const className=e.target.value;setData(d=>{const oldClass=d.classInfo.className;const configs={...d.classSubjectConfigs,[oldClass]:d.subjects};const subjects=configs[className] || subjectsForClass(className);configs[className]=subjects;return {...d,classInfo:{...d.classInfo,className},classSubjectConfigs:configs,subjects,students:d.students.map(st=>({...st,remarks:{...st.remarks,subjects:{...Object.fromEntries(subjects.map(sub=>[sub.id,''])),...st.remarks.subjects}}})),results:Object.fromEntries(exams.map(k=>[k,d.results[k].map(m=>({...m,...Object.fromEntries(subjects.map(sub=>[sub.id,m[sub.id]??null]))}))])) as AppData['results']}})}}/>{data.settings.sectionEnabled && <><label>Section</label><input value={data.classInfo.section} disabled={data.students.length>0} title={data.students.length>0 ? "Reset students before changing the section." : "Section"} onChange={e=>setData(d=>({...d,classInfo:{...d.classInfo,section:e.target.value}}))}/></>}</div>{data.students.length>0 && <small className="class-lock-note">Class, section and session are locked while student records exist. Create a ZIP backup, then use Reset Students before starting another class/session.</small>}</div>
+      <div className="workspace-switcher"><label htmlFor="workspace-select">Saved class workspaces</label><select id="workspace-select" value={workspaces.find(w=>w.data.academicSession===data.academicSession && w.data.classInfo.className===data.classInfo.className && (w.data.classInfo.section||'')===(data.classInfo.section||''))?.id || ''} onChange={e=>{if(e.target.value) switchWorkspace(e.target.value);}}><option value="">Current workspace</option>{workspaces.map(w=><option key={w.id} value={w.id}>Class {w.data.classInfo.className}{w.data.classInfo.section ? `-${w.data.classInfo.section}` : ''} · {w.data.academicSession} · {w.data.students.length} students</option>)}</select></div><nav>{nav.map(([id,label,Icon])=><button key={id} className={section===id?'nav-item active':'nav-item'} onClick={()=>setSection(id)}><Icon size={18}/><span>{label}</span></button>)}</nav>
       <div className="sidebar-bottom"><span className="status-dot"/><span>{status}</span></div>
     </aside>
     <main className="main">
       <header className="topbar"><div><div className="eyebrow">CLASS DATA MANAGEMENT</div><h1>{nav.find(n=>n[0]===section)?.[1] || 'Dashboard'}</h1></div><div className="top-actions"><span className="save-status"><Check size={15}/>{status}</span><button className="btn btn-primary" onClick={preview}><Eye size={16}/> Preview selected</button></div></header>
       {notice && <div className="notice"><Check size={16}/>{notice}<button onClick={()=>setNotice('')}>Dismiss</button></div>}
       {section==='students' && <section className="panel">
-        <div className="panel-heading"><div><h2>Students</h2><p>{data.students.length} student records · Session {data.academicSession} · Class {data.classInfo.className}{data.settings.sectionEnabled && data.classInfo.section ? ` · Section ${data.classInfo.section}` : ''} · Changes auto-save</p></div><div className="row-actions"><button className="btn" onClick={addStudent}>+ Add student</button><button className="btn" onClick={downloadStudentTemplate}><Download size={15}/> Template</button><label className="btn"><FileUp size={16}/> Import Excel/CSV<input hidden type="file" accept=".xlsx,.xls,.csv" onChange={e=>{importSpreadsheet(e.target.files?.[0], 'students'); e.currentTarget.value='';}}/></label></div></div>
+        <div className="panel-heading"><div><h2>Students</h2><p>{data.students.length} student records · Session {data.academicSession} · Class {data.classInfo.className}{data.settings.sectionEnabled && data.classInfo.section ? ` · Section ${data.classInfo.section}` : ''} · Changes auto-save</p></div><div className="row-actions"><button className="btn" onClick={addStudent}>+ Add student</button><button className="btn" onClick={promoteStudents} disabled={busy || !data.students.length}>Promote students</button><button className="btn btn-danger" onClick={resetStudents} disabled={busy}>Reset students</button><button className="btn" onClick={downloadStudentTemplate}><Download size={15}/> Template</button><label className="btn"><FileUp size={16}/> Import Excel/CSV<input hidden type="file" accept=".xlsx,.xls,.csv" onChange={e=>{importSpreadsheet(e.target.files?.[0], 'students'); e.currentTarget.value='';}}/></label></div></div>
         <div className="table-wrap"><table className="data-table student-table"><colgroup><col className="col-roll"/><col className="col-student-name"/><col className="col-parent"/><col className="col-parent"/><col className="col-gender"/><col className="col-photo"/><col className="col-actions"/></colgroup><thead><tr><th>Roll</th><th>Student name</th><th>Father</th><th>Mother</th><th>Gender</th><th>Photo</th><th></th></tr></thead><tbody>{data.students.map((s,rowIndex)=><tr key={s.studentId}><td><input data-student-row={rowIndex} data-student-col={0} onKeyDown={e=>handleStudentGridKeyDown(e,rowIndex,0)} className="cell-input roll" value={s.roll} onChange={e=>updateStudent(s.studentId,'roll',e.target.value)}/></td><td><input data-student-row={rowIndex} data-student-col={1} onKeyDown={e=>handleStudentGridKeyDown(e,rowIndex,1)} className="cell-input name" value={s.name} onChange={e=>updateStudent(s.studentId,'name',e.target.value)}/></td><td><input data-student-row={rowIndex} data-student-col={2} onKeyDown={e=>handleStudentGridKeyDown(e,rowIndex,2)} className="cell-input parent-input" value={s.father} onChange={e=>updateStudent(s.studentId,'father',e.target.value)}/></td><td><input data-student-row={rowIndex} data-student-col={3} onKeyDown={e=>handleStudentGridKeyDown(e,rowIndex,3)} className="cell-input parent-input" value={s.mother} onChange={e=>updateStudent(s.studentId,'mother',e.target.value)}/></td><td><select data-student-row={rowIndex} data-student-col={4} onKeyDown={e=>handleStudentGridKeyDown(e,rowIndex,4)} className="cell-input gender-input" value={s.gender} onChange={e=>updateStudent(s.studentId,'gender',e.target.value)}><option value="">—</option><option>Male</option><option>Female</option><option>Other</option></select></td><td><div className="photo-actions"><button type="button" className="photo-button" title={s.photo ? 'Open existing photo in cropper' : 'Upload student photo'} onClick={()=>{if(s.photo){setCropDraft({studentId:s.studentId,src:s.photo,fileName: s.name ? `${s.name} — current photo` : 'Current photo'});}else{document.getElementById(`photo-upload-${s.studentId}`)?.click();}}}>{s.photo ? <img src={s.photo} alt="Student photo" /> : <ImagePlus size={17}/>}</button><label className="photo-new-button" title="Select a new image">New<input id={`photo-upload-${s.studentId}`} hidden type="file" accept="image/*" onChange={async e=>{const f=e.currentTarget.files?.[0];if(f){try{setCropDraft({studentId:s.studentId,src:await fileToDataUrl(f),fileName:f.name});}catch{alert('Could not read this image file.');}}e.currentTarget.value='';}}/></label></div></td><td><button className="icon-btn danger" title="Delete student" onClick={()=>deleteStudent(s.studentId)}><Trash2 size={16}/></button></td></tr>)}</tbody></table>{!data.students.length&&<div className="empty">No students yet. Add a student or import an Excel/CSV file.</div>}</div>
       </section>}
       {section==='school' && <section className="panel"><div className="panel-heading"><div><h2>School profile</h2><p>These details populate your existing HTML template.</p></div></div>
@@ -451,7 +582,7 @@ function App() {
           <div className="panel-subsection"><h3>School images</h3><div className="form-grid three"><label className="field section-toggle"><span>Show left logo</span><input type="checkbox" checked={data.school.showLeftLogo !== false} onChange={e=>setData(d=>({...d,school:{...d.school,showLeftLogo:e.target.checked}}))}/></label><label className="field upload-field"><span>Top-left logo</span><label className="upload-box"><Upload size={16}/> Upload left logo<input hidden type="file" accept="image/*" onChange={e=>{uploadAsset(e.target.files?.[0],'logoLeft');e.currentTarget.value='';}}/></label>{(data.school.logoLeft||data.school.logo)&&<img className="asset-preview" src={data.school.logoLeft||data.school.logo} alt="Left logo preview"/>}</label><label className="field section-toggle"><span>Show right logo</span><input type="checkbox" checked={data.school.showRightLogo !== false} onChange={e=>setData(d=>({...d,school:{...d.school,showRightLogo:e.target.checked}}))}/></label><label className="field section-toggle"><span>Use left logo on right</span><input type="checkbox" checked={data.school.rightLogoUseLeftLogo !== false} onChange={e=>setData(d=>({...d,school:{...d.school,rightLogoUseLeftLogo:e.target.checked}}))}/></label>{data.school.rightLogoUseLeftLogo === false && <label className="field upload-field"><span>Top-right logo</span><label className="upload-box"><Upload size={16}/> Upload right logo<input hidden type="file" accept="image/*" onChange={e=>{uploadAsset(e.target.files?.[0],'logoRight');e.currentTarget.value='';}}/></label>{data.school.logoRight&&<img className="asset-preview" src={data.school.logoRight} alt="Right logo preview"/>}</label>}<label className="field section-toggle"><span>Show watermark</span><input type="checkbox" checked={data.school.showWatermark !== false} onChange={e=>setData(d=>({...d,school:{...d.school,showWatermark:e.target.checked}}))}/></label><label className="field section-toggle"><span>Use left logo as watermark</span><input type="checkbox" checked={data.school.watermarkUseLeftLogo !== false} onChange={e=>setData(d=>({...d,school:{...d.school,watermarkUseLeftLogo:e.target.checked}}))}/></label>{data.school.watermarkUseLeftLogo === false && <label className="field upload-field"><span>Watermark image</span><label className="upload-box"><Upload size={16}/> Upload watermark<input hidden type="file" accept="image/*" onChange={e=>{uploadAsset(e.target.files?.[0],'watermark');e.currentTarget.value='';}}/></label>{data.school.watermark&&<img className="asset-preview" src={data.school.watermark} alt="Watermark preview"/>}</label>}</div></div>
         </div>
         <div className="panel-subsection"><h3>Watermark appearance</h3><label className="field"><span>Display mode</span><select value={data.marksheetSettings.watermarkMode} onChange={e=>setData(d=>({...d,marksheetSettings:{...d.marksheetSettings,watermarkMode:e.target.value as 'repeat'|'single'}}))}><option value="repeat">Repeated pattern</option><option value="single">Single centered image</option></select></label><label className="field"><span>Opacity: {data.marksheetSettings.watermarkOpacity}%</span><input type="range" min="0" max="100" value={data.marksheetSettings.watermarkOpacity} onChange={e=>setData(d=>({...d,marksheetSettings:{...d.marksheetSettings,watermarkOpacity:Number(e.target.value)}}))}/></label>{data.marksheetSettings.watermarkMode==='repeat'?<label className="field"><span>Repeated tile size: {data.marksheetSettings.watermarkRepeatSize}px</span><input type="range" min="24" max="180" step="4" value={data.marksheetSettings.watermarkRepeatSize} onChange={e=>setData(d=>({...d,marksheetSettings:{...d.marksheetSettings,watermarkRepeatSize:Number(e.target.value)}}))}/></label>:<label className="field"><span>Centered image size: {data.marksheetSettings.watermarkCenterSize}px</span><input type="range" min="120" max="900" step="20" value={data.marksheetSettings.watermarkCenterSize} onChange={e=>setData(d=>({...d,marksheetSettings:{...d.marksheetSettings,watermarkCenterSize:Number(e.target.value)}}))}/></label>}</div>
-        <div className="panel-subsection"><h3>Student data settings</h3><label className="field section-toggle"><span>Enable Sections</span><span className="setting-help">When disabled, Section is hidden from student entry and templates. Extra Section columns in imported files are ignored.</span><input type="checkbox" checked={data.settings.sectionEnabled} onChange={e=>{const enabled=e.target.checked;if(!enabled && data.classInfo.section.trim() && data.students.length && !confirm('Disable sections? The current section value will be cleared from the active class view. Existing backup data is not deleted.')) return;setData(d=>({...d,settings:{...d.settings,sectionEnabled:enabled},classInfo:{...d.classInfo,section:enabled?d.classInfo.section:''}}));}} /></label></div>
+        <div className="panel-subsection"><h3>Student data settings</h3><label className="field section-toggle"><span>Enable Sections</span><span className="setting-help">When disabled, Section is hidden from student entry and templates. Extra Section columns in imported files are ignored.</span><input type="checkbox" checked={data.settings.sectionEnabled} onChange={e=>{const enabled=e.target.checked;if(!enabled && data.classInfo.section.trim() && data.students.length && !confirm('Disable sections? The current section value will be cleared from the active class view. Existing backup data is not deleted.')) return;setData(d=>({...d,settings:{...d.settings,sectionEnabled:enabled},classInfo:{...d.classInfo,section:enabled?d.classInfo.section:''}}));}} /></label><label className="field section-toggle"><span>Allowed multiple class import</span><span className="setting-help">Unchecked by default. When enabled, a file containing multiple classes is split into separate saved class workspaces after explicit confirmation.</span><input type="checkbox" checked={data.settings.allowMultipleClassImport} onChange={e=>setData(d=>({...d,settings:{...d.settings,allowMultipleClassImport:e.target.checked}}))}/></label></div>
         <div className="panel-subsection"><h3>Exam configuration</h3><p>Maximum marks are the actual exam maximum. Marks shown in marksheet are the contribution used in combined reports.</p><div className="exam-config-list">{exams.map(k=><div className="exam-config-row" key={k}><strong>{data.exams[k].name}</strong><label className="field"><span>Maximum marks</span><input type="number" min="1" step="0.01" value={data.exams[k].maxMarks} onChange={e=>setData(d=>({...d,exams:{...d.exams,[k]:{...d.exams[k],maxMarks:Number(e.target.value)}}}))}/></label><label className="field"><span>Marks shown in marksheet</span><input type="number" min="0" step="0.01" value={data.exams[k].weightage} onChange={e=>setData(d=>({...d,exams:{...d.exams,[k]:{...d.exams[k],weightage:Number(e.target.value)}}}))}/></label></div>)}</div><label className="field"><span>Fractional marks precision</span><select value={data.marksheetSettings.marksPrecision} onChange={e=>setData(d=>({...d,marksheetSettings:{...d.marksheetSettings,marksPrecision:Number(e.target.value) as 0|1|2}}))}><option value="0">Integer (nearest whole number)</option><option value="1">One decimal place (recommended)</option><option value="2">Two decimal places</option></select><small>Calculations retain full precision internally; rounding is applied only to displayed marks.</small></label></div>
         <div className="panel-subsection"><h3>Subjects for class {data.classInfo.className}</h3><p>Subject IDs stay stable when you rename a subject. Removing a subject can hide its existing marks, so review before removing.</p><div className="subject-editor">{data.subjects.map((s,i)=><div className="subject-edit-row" key={s.id}><span className="subject-index">{i+1}</span><input aria-label={`Subject ${i+1} name`} value={s.name} onChange={e=>setData(d=>({...d,subjects:d.subjects.map(x=>x.id===s.id?{...x,name:e.target.value}:x),classSubjectConfigs:{...d.classSubjectConfigs,[d.classInfo.className]:d.subjects.map(x=>x.id===s.id?{...x,name:e.target.value}:x)}}))}/><button type="button" className="icon-btn danger" title="Remove subject" onClick={()=>{if(confirm(`Remove ${s.name || `Subject ${i+1}`} from the active subject list? Existing marks may remain in the saved data but will not appear in the marksheet.`))setData(d=>({...d,subjects:d.subjects.filter(x=>x.id!==s.id),classSubjectConfigs:{...d.classSubjectConfigs,[d.classInfo.className]:d.subjects.filter(x=>x.id!==s.id)}}));}}><Trash2 size={16}/></button></div>)}<button className="btn" type="button" onClick={()=>setData(d=>{const added={id:`custom-${crypto.randomUUID()}`,name:''};const subjects=[...d.subjects,added];return {...d,subjects,classSubjectConfigs:{...d.classSubjectConfigs,[d.classInfo.className]:subjects}}})}><Plus size={15}/> Add subject</button></div></div>
         <div className="panel-subsection"><h3>Grading scale</h3><p>Rules are evaluated from top to bottom. Use the arrow buttons to set priority; ensure the rules cover every percentage without unintended overlaps.</p><div className="grade-editor">{data.grading.grades.map((g,i)=><div className="grade-edit-row" key={`${g.grade}-${i}`}><input aria-label="Grade label" value={g.grade} onChange={e=>setData(d=>({...d,grading:{...d.grading,grades:d.grading.grades.map((x,j)=>j===i?{...x,grade:e.target.value}:x)},remarkRules:{...d.remarkRules,overall:d.remarkRules.overall.map(r=>r.grade===g.grade?{...r,grade:e.target.value}:r)}}))}/><select aria-label="Grade operator" value={g.operator || '>='} onChange={e=>setData(d=>({...d,grading:{...d.grading,grades:d.grading.grades.map((x,j)=>j===i?{...x,operator:e.target.value as '>='|'>'|'<='|'<' }:x)}}))}><option value=">=">≥</option><option value=">">&gt;</option><option value="<=">≤</option><option value="<">&lt;</option></select><input aria-label="Grade threshold percentage" type="number" min="0" max="100" step="0.01" value={g.minPercentage} onChange={e=>setData(d=>({...d,grading:{...d.grading,grades:d.grading.grades.map((x,j)=>j===i?{...x,minPercentage:Number(e.target.value)}:x)}}))}/><span>%</span><button type="button" className="icon-btn" disabled={i===0} title="Move grade up" onClick={()=>setData(d=>{const a=[...d.grading.grades];[a[i-1],a[i]]=[a[i],a[i-1]];return {...d,grading:{...d.grading,grades:a}}})}><ArrowUp size={14}/></button><button type="button" className="icon-btn" disabled={i===data.grading.grades.length-1} title="Move grade down" onClick={()=>setData(d=>{const a=[...d.grading.grades];[a[i],a[i+1]]=[a[i+1],a[i]];return {...d,grading:{...d.grading,grades:a}}})}><ArrowDown size={14}/></button><button type="button" className="icon-btn danger" disabled={data.grading.grades.length<=1} title="Remove grade" onClick={()=>setData(d=>({...d,grading:{...d.grading,grades:d.grading.grades.filter((_,j)=>j!==i)},remarkRules:{...d.remarkRules,overall:d.remarkRules.overall.filter(r=>r.grade!==g.grade)}}))}><Trash2 size={16}/></button></div>)}<button className="btn" type="button" onClick={()=>setData(d=>({...d,grading:{...d.grading,grades:[...d.grading.grades,{grade:'',operator:'>=',minPercentage:0}]}}))}><Plus size={15}/> Add grade</button></div></div>
@@ -459,7 +590,7 @@ function App() {
         <div className="panel-subsection"><h3>Issue date</h3><p>Configure the date displayed alongside the signature blocks on the marksheet.</p><label className="field section-toggle"><span>Show issue date</span><span className="setting-help">Display or hide the issue date on the printed marksheet.</span><input type="checkbox" checked={data.marksheetSettings.showIssueDate} onChange={e=>setData(d=>({...d,marksheetSettings:{...d.marksheetSettings,showIssueDate:e.target.checked}}))}/></label><div className="form-grid"><label className="field"><span>Issue date</span><input type="date" value={data.marksheetSettings.issueDate} onChange={e=>setData(d=>({...d,marksheetSettings:{...d.marksheetSettings,issueDate:e.target.value}}))}/><span className="setting-help">Defaults to today's date. Change it when issuing or reprinting a marksheet.</span></label><label className="field"><span>Date format</span><select value={data.marksheetSettings.issueDateFormat} onChange={e=>setData(d=>({...d,marksheetSettings:{...d.marksheetSettings,issueDateFormat:e.target.value as AppData['marksheetSettings']['issueDateFormat']}}))}><option value="DD-MM-YYYY">DD-MM-YYYY</option><option value="DD/MM/YYYY">DD/MM/YYYY</option><option value="YYYY-MM-DD">YYYY-MM-DD</option></select></label><label className="field"><span>Date label</span><input value={data.marksheetSettings.issueDateLabel} placeholder="Date" onChange={e=>setData(d=>({...d,marksheetSettings:{...d.marksheetSettings,issueDateLabel:e.target.value}}))}/></label></div></div>
         <div className="panel-subsection"><h3>Signature and designation blocks</h3><p>Enabled blocks stay in one row at the bottom. Names and signature images are optional; labels appear below aligned dividers.</p><div className="signature-settings">{data.marksheetSettings.signatures.map((sig,i)=><div className="signature-setting-card" key={sig.id}><div className="signature-setting-top"><label className="toggle-label"><input type="checkbox" checked={sig.enabled} onChange={e=>setData(d=>({...d,marksheetSettings:{...d.marksheetSettings,signatures:d.marksheetSettings.signatures.map(x=>x.id===sig.id?{...x,enabled:e.target.checked}:x)}}))}/> Show on marksheet</label><div className="row-actions"><button className="icon-btn" disabled={i===0} title="Move left" onClick={()=>setData(d=>{const a=[...d.marksheetSettings.signatures];[a[i-1],a[i]]=[a[i],a[i-1]];return {...d,marksheetSettings:{...d.marksheetSettings,signatures:a}}})}><ArrowLeft size={15}/></button><button className="icon-btn" disabled={i===data.marksheetSettings.signatures.length-1} title="Move right" onClick={()=>setData(d=>{const a=[...d.marksheetSettings.signatures];[a[i],a[i+1]]=[a[i+1],a[i]];return {...d,marksheetSettings:{...d.marksheetSettings,signatures:a}}})}><ArrowRight size={15}/></button><button className="icon-btn danger" disabled={data.marksheetSettings.signatures.length<=1} title="Remove signature block" onClick={()=>setData(d=>({...d,marksheetSettings:{...d.marksheetSettings,signatures:d.marksheetSettings.signatures.filter(x=>x.id!==sig.id)}}))}><Trash2 size={15}/></button></div></div><label className="field"><span>Designation label</span><input value={sig.label} onChange={e=>setData(d=>({...d,marksheetSettings:{...d.marksheetSettings,signatures:d.marksheetSettings.signatures.map(x=>x.id===sig.id?{...x,label:e.target.value}:x)}}))}/></label><label className="field"><span>Person name (optional)</span><input value={sig.name} placeholder="Leave blank for handwritten name" onChange={e=>setData(d=>({...d,marksheetSettings:{...d.marksheetSettings,signatures:d.marksheetSettings.signatures.map(x=>x.id===sig.id?{...x,name:e.target.value}:x)}}))}/></label><label className="field"><span>Signature image (transparent PNG supported)</span><label className="upload-box"><Upload size={16}/> Upload / replace signature<input hidden type="file" accept="image/png,image/*" onChange={async e=>{const file=e.currentTarget.files?.[0];if(file){try{const image=await fileToDataUrl(file);setData(d=>({...d,marksheetSettings:{...d.marksheetSettings,signatures:d.marksheetSettings.signatures.map(x=>x.id===sig.id?{...x,signatureImage:image}:x)}}));}catch{alert('Could not read signature image.');}}e.currentTarget.value='';}}/></label>{sig.signatureImage&&<div className="signature-asset-preview"><img src={sig.signatureImage} alt={`${sig.label} preview`} style={{width:`${sig.widthMm??32}mm`,height:`${sig.heightMm??10}mm`,maxWidth:'100%',objectFit:'contain'}}/><button className="icon-btn danger" onClick={()=>setData(d=>({...d,marksheetSettings:{...d.marksheetSettings,signatures:d.marksheetSettings.signatures.map(x=>x.id===sig.id?{...x,signatureImage:''}:x)}}))}>Remove image</button></div>}</label><div className="grid grid-cols-2 gap-3"><label className="field"><span>Signature width (mm)</span><input type="number" min="15" max="60" step="1" value={sig.widthMm??32} onChange={e=>setData(d=>({...d,marksheetSettings:{...d.marksheetSettings,signatures:d.marksheetSettings.signatures.map(x=>x.id===sig.id?{...x,widthMm:Math.min(60,Math.max(15,Number(e.target.value)||32))}:x)}}))}/></label><label className="field"><span>Signature height (mm)</span><input type="number" min="5" max="20" step="1" value={sig.heightMm??10} onChange={e=>setData(d=>({...d,marksheetSettings:{...d.marksheetSettings,signatures:d.marksheetSettings.signatures.map(x=>x.id===sig.id?{...x,heightMm:Math.min(20,Math.max(5,Number(e.target.value)||10))}:x)}}))}/></label></div></div>)}</div><button className="btn" type="button" disabled={data.marksheetSettings.signatures.length>=4} onClick={()=>setData(d=>({...d,marksheetSettings:{...d.marksheetSettings,signatures:[...d.marksheetSettings.signatures,{id:crypto.randomUUID(),label:'',name:'',enabled:true,widthMm:32,heightMm:10}]}}))}><Plus size={15}/> Add signature block ({data.marksheetSettings.signatures.length}/4)</button></div>
       </section>}
-      {section==='marks' && <section className="panel"><div className="panel-heading"><div><h2>Exam marks</h2><p>Enter marks in the selected exam. Values above the configured maximum are rejected.</p></div><label className="btn"><FileSpreadsheet size={16}/> Import exam Excel/CSV<input hidden type="file" accept=".xlsx,.xls,.csv" onChange={e=>{setImportMode(exam);importSpreadsheet(e.target.files?.[0], exam); e.currentTarget.value='';}}/></label></div>
+      {section==='marks' && <section className="panel"><div className="panel-heading"><div><h2>Exam marks</h2><p>Enter marks in the selected exam. Values above the configured maximum are rejected.</p></div><div className="row-actions"><button className="btn btn-danger" onClick={resetMarks} disabled={busy || !data.students.length}>Reset marks</button><label className="btn"><FileSpreadsheet size={16}/> Import exam Excel/CSV<input hidden type="file" accept=".xlsx,.xls,.csv" onChange={e=>{setImportMode(exam);importSpreadsheet(e.target.files?.[0], exam); e.currentTarget.value='';}}/></label></div></div>
         <div className="upload-exam-selector"><strong>Exams affected by the next upload</strong><div className="upload-exam-options">{exams.map(k=><label key={k} className="upload-exam-option"><input type="checkbox" checked={selectedUploadExams.includes(k)} onChange={e=>setSelectedUploadExams(prev=>e.target.checked?[...prev,k]:prev.filter(x=>x!==k))}/><span>{data.exams[k].shortName}</span></label>)}</div><small>Only checked exams can be changed. If the file includes an Exam column, rows are grouped by that value. Without an Exam column, select exactly one exam.</small></div>
         <div className="exam-tabs">{exams.map(k=><button key={k} className={exam===k?'exam-tab active':'exam-tab'} onClick={()=>{setExam(k);setSelectedUploadExams(prev=>prev.length<=1?[k]:prev);}}>{data.exams[k].shortName}<small>Max {data.exams[k].maxMarks}</small></button>)}</div>
         <div className="table-wrap"><table className="data-table marks-table"><thead><tr><th>Roll</th><th>Student</th>{data.subjects.map(s=><th key={s.id}>{s.name}</th>)}</tr></thead><tbody>{data.students.map(s=><tr key={s.studentId}><td>{s.roll}</td><td>{s.name || 'Unnamed student'}</td>{data.subjects.map(sub=><td key={sub.id}><input aria-label={`${s.name} ${sub.name} ${exam}`} className="mark-input" type="number" min="0" max={data.exams[exam].maxMarks} value={data.results[exam].find(m=>m.studentId===s.studentId)?.[sub.id] ?? ''} onChange={e=>setMark(s.studentId,sub.id,e.target.value)}/></td>)}</tr>)}</tbody></table>{!data.students.length&&<div className="empty">Add students before entering marks.</div>}</div>
@@ -500,7 +631,7 @@ function App() {
       </section>}
       {section==='backup' && <section className="panel"><div className="panel-heading"><div><h2>Import & export</h2><p>ZIP is the complete backup format. JSON is the manifest inside the ZIP.</p></div></div>
         <div className="backup-grid"><div className="backup-card"><Archive size={26}/><h3>Export complete ZIP</h3><p>Includes manifest JSON, student photos, school logo/watermark, and your original HTML template.</p><button className="btn btn-primary" onClick={()=>exportZip(data,template)}><Download size={16}/> Export ZIP backup</button></div>
-        <div className="backup-card"><FileUp size={26}/><h3>Restore ZIP backup</h3><p>Validates the manifest and restores the class data and image assets.</p><label className="btn"><Upload size={16}/> Choose ZIP<input hidden type="file" accept=".zip" onChange={e=>importBackup(e.target.files?.[0])}/></label></div>
+        <div className="backup-card"><FileUp size={26}/><h3>Restore ZIP backup</h3><p>Restore a complete class backup or import a promote_ ZIP for the next session. Photos and required assets are included.</p><label className="btn"><Upload size={16}/> Choose ZIP<input hidden type="file" accept=".zip" onChange={e=>importBackup(e.target.files?.[0])}/></label></div>
         <div className="backup-card"><FileSpreadsheet size={26}/><h3>Import student Excel/CSV</h3><p>Imports student details from the first worksheet.</p><label className="btn"><Upload size={16}/> Choose Excel/CSV<input hidden type="file" accept=".xlsx,.xls,.csv" onChange={e=>{setImportMode('students');importSpreadsheet(e.target.files?.[0], 'students'); e.currentTarget.value='';}}/></label></div>
         <div className="backup-card"><FileUp size={26}/><h3>Import JSON manifest</h3><p>For advanced use or recovery from a standalone manifest.</p><label className="btn"><Upload size={16}/> Choose JSON<input hidden type="file" accept=".json" onChange={e=>importJson(e.target.files?.[0])}/></label></div></div>
         <div className="panel-subsection"><h3>Print</h3><p className="muted">Uses the uploaded HTML design unchanged as the source template, with runtime data substitution.</p><div className="row-actions"><label className="field compact"><span>Student to preview</span><select value={selectedStudent} onChange={e=>setSelectedStudent(e.target.value)}><option value="">First student</option>{data.students.map(s=><option key={s.studentId} value={s.studentId}>{s.roll} · {s.name}</option>)}</select></label><button className="btn" onClick={preview} disabled={busy}><Eye size={16}/> Preview selected</button><button className="btn" onClick={previewAll} disabled={busy}><Eye size={16}/> Preview all ({data.students.length})</button><button className="btn btn-primary" onClick={printAll} disabled={busy}><Printer size={16}/> Print all ({data.students.length})</button></div></div>

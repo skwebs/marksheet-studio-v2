@@ -3,7 +3,26 @@ import type { AppData, Student, ExamKey } from './types';
 import { examKeys } from './data';
 
 const esc = (value: unknown) => String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]!));
-const num = (value: unknown) => typeof value === 'number' && Number.isFinite(value) ? value : 0;
+const num = (value: unknown) => {
+  if (value === null || value === undefined || value === '') return 0;
+  const parsed = typeof value === 'number' ? value : Number(String(value).trim());
+  return Number.isFinite(parsed) ? parsed : 0;
+};
+const hasMark = (value: unknown): boolean => value !== null && value !== undefined && !(typeof value === 'string' && value.trim() === '') && Number.isFinite(Number(value));
+const roundForReport = (data: AppData, value: number): number => {
+  const precision = Math.max(0, Math.min(2, Number(data.marksheetSettings.marksPrecision ?? 1)));
+  const factor = 10 ** precision;
+  return Math.round((value + Number.EPSILON) * factor) / factor;
+};
+const weightageMaximum = (data: AppData, key: ExamKey): number => Math.max(0, roundForReport(data, num(data.exams[key]?.weightage)));
+const convertedWeightage = (data: AppData, key: ExamKey, actualMarks: unknown): number => {
+  const actualMaximum = num(data.exams[key]?.maxMarks);
+  const configuredWeightage = num(data.exams[key]?.weightage);
+  if (!hasMark(actualMarks) || actualMaximum <= 0 || configuredWeightage < 0) return 0;
+  // Round each examination contribution at the configured report precision
+  // before summing, so visible exam columns always add up to the visible total.
+  return roundForReport(data, (num(actualMarks) / actualMaximum) * configuredWeightage);
+};
 const fmt = (value: number, precision: number = 1) => { if (!Number.isFinite(value)) return '0'; if (precision === 0) return String(Math.round(value)); const factor=10**precision; return (Math.round((value+Number.EPSILON)*factor)/factor).toFixed(precision); };
 function getMarks(data: AppData, student: Student, key: ExamKey) {
   return data.results[key]?.find(m => m.studentId === student.studentId || (!!student.roll && m.roll === student.roll));
@@ -15,10 +34,16 @@ function gradeFor(data: AppData, percentage: number) {
 function getPerformance(data: AppData, student: Student, keys: ExamKey[] = examKeys) {
   let obtained = 0;
   let maximum = 0;
-  const subjectRows = data.subjects.map(subject => {
-    const combined = keys.length > 1;
-    const subjectObtained = keys.reduce((sum, key) => { const raw=num(getMarks(data, student, key)?.[subject.id]); const exam=data.exams[key]; return sum + (combined && exam.maxMarks ? raw * num(exam.weightage) / num(exam.maxMarks) : raw); }, 0);
-    const subjectMaximum = keys.reduce((sum, key) => sum + (combined ? num(data.exams[key]?.weightage) : num(data.exams[key]?.maxMarks)), 0);
+  const subjectRows = data.subjects.filter(subject => subject.enabled !== false).map(subject => {
+    let subjectObtained = 0;
+    let subjectMaximum = 0;
+    for (const key of keys) {
+      const raw = getMarks(data, student, key)?.[subject.id];
+      // A missing mark is not a zero: it contributes neither score nor maximum.
+      if (!hasMark(raw)) continue;
+      subjectObtained += convertedWeightage(data, key, raw);
+      subjectMaximum += weightageMaximum(data, key);
+    }
     obtained += subjectObtained;
     maximum += subjectMaximum;
     return { subject, obtained: subjectObtained, maximum: subjectMaximum, percentage: subjectMaximum ? subjectObtained / subjectMaximum * 100 : 0 };
@@ -99,11 +124,10 @@ export async function renderMarksheet(sourceHtml: string, data: AppData, student
     else photo.removeAttribute('src');
   }
 
-  const combinedReport = reportKeys.length > 1;
   const precision = data.marksheetSettings.marksPrecision ?? 1;
   const fmtMarks = (value: number) => fmt(value, precision);
-  const examMax = (key: ExamKey) => combinedReport ? num(data.exams[key]?.weightage) : num(data.exams[key]?.maxMarks);
-  const convertMark = (key: ExamKey, value: number) => combinedReport && num(data.exams[key]?.maxMarks) ? value * num(data.exams[key]?.weightage) / num(data.exams[key]?.maxMarks) : value;
+  const examMax = (key: ExamKey) => weightageMaximum(data, key);
+  const convertMark = (key: ExamKey, value: number) => convertedWeightage(data, key, value);
   const reportExams = reportKeys;
   const orientation = data.marksheetSettings.tableOrientation === 'auto'
     ? (reportExams.length === 1 ? 'subjects-columns' : 'subjects-rows')
@@ -119,18 +143,22 @@ export async function renderMarksheet(sourceHtml: string, data: AppData, student
     const td = (label: string) => { const el = doc.createElement('td'); el.textContent = label; el.className = 'px-3 py-2'; return el; };
     const tr = () => { const el = doc.createElement('tr'); el.className = 'border-b border-gray-300'; return el; };
     const totals = Object.fromEntries(examKeys.map(k=>[k,0])) as Record<ExamKey, number>;
+    const examMaximums = Object.fromEntries(examKeys.map(k=>[k,0])) as Record<ExamKey, number>;
     let allObtained = 0;
     let allMaximum = 0;
-    const perSubject = data.subjects.map(subject => {
+    const perSubject = data.subjects.filter(subject => subject.enabled !== false).map(subject => {
       const examValues = Object.fromEntries(reportExams.map(key => {
         const raw = getMarks(data, student, key)?.[subject.id];
-        const value = raw === null || raw === undefined || raw === '' ? null : num(raw);
+        const value = hasMark(raw) ? num(raw) : null;
         return [key, value];
       })) as Record<ExamKey, number | null>;
       const convertedValues = Object.fromEntries(reportExams.map(key=>[key, examValues[key] === null ? null : convertMark(key, examValues[key] ?? 0)])) as Record<ExamKey, number|null>;
       const obtained = reportExams.reduce((sum, key) => sum + (convertedValues[key] ?? 0), 0);
-      const maximum = reportExams.reduce((sum, key) => sum + examMax(key), 0);
-      reportExams.forEach(key => { totals[key] += convertedValues[key] ?? 0; });
+      const maximum = reportExams.reduce((sum, key) => sum + (examValues[key] === null ? 0 : examMax(key)), 0);
+      reportExams.forEach(key => {
+        totals[key] += convertedValues[key] ?? 0;
+        if (examValues[key] !== null) examMaximums[key] += examMax(key);
+      });
       allObtained += obtained;
       allMaximum += maximum;
       return { subject, examValues, convertedValues, obtained, maximum, grade: gradeFor(data, maximum ? obtained / maximum * 100 : 0) };
@@ -139,14 +167,14 @@ export async function renderMarksheet(sourceHtml: string, data: AppData, student
     if (orientation === 'subjects-columns') {
       const header = tr();
       header.append(th('#'));
-      data.subjects.forEach(subject => header.append(th(subject.name)));
+      perSubject.forEach(item => header.append(th(item.subject.name)));
       head.append(header);
-      const fullMarksRow = tr(); fullMarksRow.append(th('Full Marks'));
-      perSubject.forEach(() => fullMarksRow.append(td(fmtMarks(examMax(reportExams[0])))));
+      const fullMarksRow = tr(); fullMarksRow.append(th('Full Weightage'));
+      perSubject.forEach(item => fullMarksRow.append(td(item.examValues[reportExams[0]] === null ? '—' : fmtMarks(examMax(reportExams[0])))));
       body.append(fullMarksRow);
       if (data.marksheetSettings.showMarksRow !== false) {
-        const row = tr(); row.append(th('Obtained Marks'));
-        perSubject.forEach(item => row.append(td(item.examValues[reportExams[0]] === null ? '—' : fmtMarks(item.examValues[reportExams[0]]!))));
+        const row = tr(); row.append(th('Obtained Weightage'));
+        perSubject.forEach(item => row.append(td(item.examValues[reportExams[0]] === null ? '—' : fmtMarks(item.convertedValues[reportExams[0]] ?? 0))));
         body.append(row);
       }
       if (data.marksheetSettings.showGradeRow !== false && data.marksheetSettings.showSubjectGrade !== false) {
@@ -162,19 +190,19 @@ export async function renderMarksheet(sourceHtml: string, data: AppData, student
       const header = tr();
       header.append(th('Subject'));
       reportExams.forEach(key => header.append(th(`${data.exams[key].shortName} (${fmtMarks(examMax(key))})`)));
-      if (reportExams.length > 1 && data.marksheetSettings.showTotalColumn !== false) header.append(th(`Total (${fmtMarks(reportExams.reduce((sum,key)=>sum+examMax(key),0))})`));
+      if (reportExams.length > 1 && data.marksheetSettings.showTotalColumn !== false) header.append(th('Total (Weightage)'));
       if (data.marksheetSettings.showSubjectGrade !== false) header.append(th('Grade'));
       head.append(header);
       perSubject.forEach(item => {
         const row = tr(); row.append(th(item.subject.name));
         reportExams.forEach(key => row.append(td(item.examValues[key] === null ? '—' : fmtMarks(item.convertedValues[key] ?? 0))));
-        if (reportExams.length > 1 && data.marksheetSettings.showTotalColumn !== false) row.append(td(fmtMarks(item.obtained)));
+        if (reportExams.length > 1 && data.marksheetSettings.showTotalColumn !== false) row.append(td(`${fmtMarks(item.obtained)} / ${fmtMarks(item.maximum)}`));
         if (data.marksheetSettings.showSubjectGrade !== false) row.append(td(item.maximum ? item.grade : '—'));
         body.append(row);
       });
       const footer = tr(); footer.append(th('Total'));
-      reportExams.forEach(key => footer.append(th(fmtMarks(totals[key]))));
-      if (reportExams.length > 1 && data.marksheetSettings.showTotalColumn !== false) footer.append(th(fmtMarks(allObtained)));
+      reportExams.forEach(key => footer.append(th(`${fmtMarks(totals[key])} / ${fmtMarks(examMaximums[key])}`)));
+      if (reportExams.length > 1 && data.marksheetSettings.showTotalColumn !== false) footer.append(th(`${fmtMarks(allObtained)} / ${fmtMarks(allMaximum)}`));
       if (data.marksheetSettings.showSubjectGrade !== false) footer.append(th(gradeFor(data, allMaximum ? allObtained / allMaximum * 100 : 0)));
       foot.append(footer);
     }
@@ -182,16 +210,7 @@ export async function renderMarksheet(sourceHtml: string, data: AppData, student
       foot.remove();
     }
   }
-  const reportPerformance = (() => {
-    const rows = data.subjects.map(subject => {
-      const obtained = reportExams.reduce((sum,key) => { const raw=num(getMarks(data, student, key)?.[subject.id]); return sum + convertMark(key, raw); }, 0);
-      const maximum = reportExams.reduce((sum,key) => sum + examMax(key), 0);
-      return { subject, obtained, maximum, percentage: maximum ? obtained / maximum * 100 : 0 };
-    });
-    const obtained = rows.reduce((sum,row)=>sum+row.obtained,0);
-    const maximum = rows.reduce((sum,row)=>sum+row.maximum,0);
-    return { subjectRows: rows, obtained, maximum, percentage: maximum ? obtained/maximum*100 : 0 };
-  })();
+  const reportPerformance = getPerformance(data, student, reportExams);
   const allObtained = reportPerformance.obtained;
   const allMaximum = reportPerformance.maximum;
   const performance = reportPerformance;
@@ -321,14 +340,14 @@ async function renderModernTemplate(doc: Document, data: AppData, student: Stude
   const keys: ExamKey[] = reportKeys.length ? reportKeys : ['hy'];
   const isMulti = doc.getElementById('marksTableFoot') !== null;
   const enabledSubjects = data.subjects.filter(subject => subject.enabled !== false);
-  const maxFor = (key: ExamKey) => Math.max(0, keys.length > 1 ? Number(data.exams[key]?.weightage ?? data.exams[key]?.maxMarks) || 0 : Number(data.exams[key]?.maxMarks) || 0);
+  const maxFor = (key: ExamKey) => weightageMaximum(data, key);
   const getExamMarks = (key: ExamKey, subjectId: string): number | null => {
     const record = data.results[key]?.find(item => item.studentId === student.studentId || (!item.studentId && item.roll === student.roll));
     const raw = record?.[subjectId];
-    if (raw === null || raw === undefined || raw === '') return null;
+    if (!hasMark(raw)) return null;
     const value = Number(raw);
     if (!Number.isFinite(value)) return null;
-    return keys.length > 1 && maxFor(key) ? value * maxFor(key) / Math.max(1, Number(data.exams[key]?.maxMarks) || 1) : value;
+    return convertedWeightage(data, key, value);
   };
   const gradeForPercentage = (percentage: number) => data.grading.grades.find(rule => {
     const op = rule.operator || '>=';
@@ -340,7 +359,7 @@ async function renderModernTemplate(doc: Document, data: AppData, student: Stude
   const rows = enabledSubjects.map(subject => {
     const examMarks = keys.map(key => getExamMarks(key, subject.id));
     const obtained = examMarks.reduce<number>((sum, mark) => sum + (mark ?? 0), 0);
-    const maximum = keys.reduce((sum, key) => sum + maxFor(key), 0);
+    const maximum = keys.reduce((sum, key, index) => sum + (examMarks[index] === null ? 0 : maxFor(key)), 0);
     return { subject, examMarks, obtained, maximum, percentage: maximum ? obtained / maximum * 100 : 0 };
   });
   const grandObtained = rows.reduce((sum, row) => sum + row.obtained, 0);
@@ -429,21 +448,29 @@ async function renderModernTemplate(doc: Document, data: AppData, student: Stude
       const header = doc.createElement('tr');
       header.append(makeCell('th', 'Subjects', 'w-44 py-2 px-3 text-left'));
       keys.forEach(key => header.append(makeCell('th', `${data.exams[key].shortName} (${fmtMarks(maxFor(key))})`, 'py-2 px-2')));
-      if (keys.length > 1 && data.marksheetSettings.showTotalColumn !== false) header.append(makeCell('th', `Total (${fmtMarks(keys.reduce((sum, key) => sum + maxFor(key), 0))})`));
+      if (keys.length > 1 && data.marksheetSettings.showTotalColumn !== false) header.append(makeCell('th', 'Total (Weightage)'));
       if (data.marksheetSettings.showSubjectGrade !== false) header.append(makeCell('th', 'Grade'));
       head.append(header);
       const totals = Object.fromEntries(keys.map(key => [key, 0])) as Record<ExamKey, number>;
+      const examMaximums = Object.fromEntries(keys.map(key => [key, 0])) as Record<ExamKey, number>;
       rows.forEach(row => {
         const tr = doc.createElement('tr'); tr.append(makeCell('td', row.subject.name, 'py-1.5 px-3 text-left'));
-        row.examMarks.forEach((mark, index) => { totals[keys[index]] += mark ?? 0; tr.append(makeCell('td', mark === null ? '—' : fmtMarks(mark), 'py-1.5 px-2')); });
-        if (keys.length > 1 && data.marksheetSettings.showTotalColumn !== false) tr.append(makeCell('td', fmtMarks(row.obtained)));
+        row.examMarks.forEach((mark, index) => {
+          const key = keys[index];
+          // getExamMarks already returns converted weightage; never convert twice.
+          const converted = mark;
+          totals[key] += converted ?? 0;
+          if (mark !== null) examMaximums[key] += maxFor(key);
+          tr.append(makeCell('td', converted === null ? '—' : fmtMarks(converted), 'py-1.5 px-2'));
+        });
+        if (keys.length > 1 && data.marksheetSettings.showTotalColumn !== false) tr.append(makeCell('td', `${fmtMarks(row.obtained)} / ${fmtMarks(row.maximum)}`));
         if (data.marksheetSettings.showSubjectGrade !== false) tr.append(makeCell('td', row.maximum ? gradeForPercentage(row.percentage) : '—'));
         body.append(tr);
       });
       if (foot) {
         const totalRow = doc.createElement('tr'); totalRow.append(makeCell('th', 'Grand Total', 'py-1.5 px-3 text-left'));
-        keys.forEach(key => totalRow.append(makeCell('th', fmtMarks(totals[key]))));
-        if (keys.length > 1 && data.marksheetSettings.showTotalColumn !== false) totalRow.append(makeCell('th', fmtMarks(grandObtained)));
+        keys.forEach(key => totalRow.append(makeCell('th', `${fmtMarks(totals[key])} / ${fmtMarks(examMaximums[key])}`)));
+        if (keys.length > 1 && data.marksheetSettings.showTotalColumn !== false) totalRow.append(makeCell('th', `${fmtMarks(grandObtained)} / ${fmtMarks(grandMaximum)}`));
         if (data.marksheetSettings.showSubjectGrade !== false) totalRow.append(makeCell('th', overallGrade));
         foot.append(totalRow);
       }
@@ -451,9 +478,9 @@ async function renderModernTemplate(doc: Document, data: AppData, student: Stude
       const header = doc.createElement('tr'); header.append(makeCell('th', '#', 'py-2 px-2'));
       rows.forEach(row => header.append(makeCell('th', row.subject.name, 'py-2 px-1')));
       head.append(header);
-      const fullMarksRow = doc.createElement('tr'); fullMarksRow.append(makeCell('th', 'Full Marks', 'py-2 px-2'));
-      rows.forEach(row => fullMarksRow.append(makeCell('td', fmtMarks(maxFor(keys[0])), 'py-2 px-1')));
-      const marksRow = doc.createElement('tr'); marksRow.append(makeCell('th', 'Obtained Marks', 'py-2 px-2'));
+      const fullMarksRow = doc.createElement('tr'); fullMarksRow.append(makeCell('th', 'Full Weightage', 'py-2 px-2'));
+      rows.forEach(row => fullMarksRow.append(makeCell('td', row.examMarks[0] === null ? '—' : fmtMarks(maxFor(keys[0])), 'py-2 px-1')));
+      const marksRow = doc.createElement('tr'); marksRow.append(makeCell('th', 'Obtained Weightage', 'py-2 px-2'));
       rows.forEach(row => marksRow.append(makeCell('td', row.examMarks[0] === null ? '—' : fmtMarks(row.examMarks[0]!), 'py-2 px-1')));
       body.append(fullMarksRow);
       if (data.marksheetSettings.showMarksRow !== false) body.append(marksRow);
@@ -479,6 +506,10 @@ async function renderModernTemplate(doc: Document, data: AppData, student: Stude
 
   // Summary cards and visibility follow the marksheet configuration.
   setText('summaryMarks', `${fmtMarks(grandObtained)} / ${fmtMarks(grandMaximum)}`);
+  const summaryMarksLabel = doc.querySelector('#summaryMarks')?.previousElementSibling;
+  if (summaryMarksLabel) summaryMarksLabel.textContent = 'Obtained Weightage';
+  const summaryPercentageLabel = doc.querySelector('#summaryPercentage')?.previousElementSibling;
+  if (summaryPercentageLabel) summaryPercentageLabel.textContent = 'Weightage Percentage';
   setText('summaryPercentage', `${percentage.toFixed(1)}%`);
   setText('summaryAttendance', `${fmtMarks(presentDays)} / ${fmtMarks(workingDays)}`);
   setText('summaryGrade', overallGrade);
@@ -490,7 +521,7 @@ async function renderModernTemplate(doc: Document, data: AppData, student: Stude
   hide(doc.getElementById('teacherRemarks')?.parentElement, data.marksheetSettings.showRemarks === false);
 
   // Subject performance chart uses the same selected-exam values as the table.
-  setText('marksChartScale', keys.length === 1 ? `Marks obtained / ${fmtMarks(maxFor(keys[0]))}` : `Total marks / ${fmtMarks(keys.reduce((sum, key) => sum + maxFor(key), 0))}`);
+  setText('marksChartScale', 'Obtained weightage / available weightage');
   setText('marksChartAverage', `${percentage.toFixed(1)}%`);
   setText('marksChartCaption', `${rows.length} subjects · performance across selected exams`);
   const chart = doc.getElementById('marksChart');
@@ -527,15 +558,13 @@ async function renderModernTemplate(doc: Document, data: AppData, student: Stude
       const normalized = name.trim().toLowerCase().replace(/\s+/g, ' ');
       return subjectAbbreviations[normalized] || name.trim().split(/\s+/).map(word => word.slice(0, 1)).join('').slice(0, 3).toUpperCase() || 'Sub';
     };
-    const subjectTokens = rows.map(row => `${abbreviateSubject(row.subject.name)}:${fmtMarks(row.obtained)}`);
+    const subjectTokens = rows.map(row => `${abbreviateSubject(row.subject.name)}:${fmtMarks(row.obtained)}/${fmtMarks(row.maximum)}`);
     const subjectLines: string[] = [];
     for (let i = 0; i < subjectTokens.length; i += 3) subjectLines.push(subjectTokens.slice(i, i + 3).join(' '));
-    const maxPerSubject = rows.length ? rows[0].maximum : grandMaximum;
     const qrPayload = [
       `${schoolInitials} | ${examLabel} | ${sessionLabel}`,
       student.name || '—',
       `Class:${classLabel} | Roll:${student.roll || '—'}`,
-      `Max:${fmtMarks(maxPerSubject)}`,
       ...subjectLines,
       `Total:${fmtMarks(grandObtained)}/${fmtMarks(grandMaximum)} (${percentage.toFixed(2)}%)`,
       `Grade:${overallGrade || '—'}`,

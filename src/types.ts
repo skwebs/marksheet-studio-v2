@@ -39,7 +39,7 @@ export type AppData = {
     showIssueDate: boolean; issueDate: string; issueDateFormat: 'DD-MM-YYYY' | 'DD/MM/YYYY' | 'YYYY-MM-DD'; issueDateLabel: string;
     signatures: SignatureBlock[];
   };
-  settings: { sectionEnabled: boolean };
+  settings: { sectionEnabled: boolean; allowMultipleClassImport: boolean };
   remarkRules: {
     overall: { grade: string; text: string }[];
     weakSubjectBelowPercentage: number;

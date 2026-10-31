@@ -71,7 +71,7 @@ export function createDefaultData(): AppData {
       { id: 'exam-controller', label: 'Exam Controller', name: '', enabled: true, widthMm: 32, heightMm: 10 },
       { id: 'principal', label: 'Principal', name: '', enabled: true, widthMm: 32, heightMm: 10 }
     ] },
-    settings: { sectionEnabled: false },
+    settings: { sectionEnabled: false, allowMultipleClassImport: false },
     remarkRules: {
       overall: [
         { grade: 'A+', text: 'Outstanding overall performance.' },
@@ -116,7 +116,7 @@ export function normalizeData(input: any): AppData {
     results: Object.fromEntries(examKeys.map(k => [k, Array.isArray(input.results?.[k]) ? input.results[k] : []])) as AppData['results'],
     grading: { ...base.grading, ...(input.grading || {}), grades: Array.isArray(input.grading?.grades) && input.grading.grades.length ? input.grading.grades.map((g: any) => ({ grade: String(g.grade || ''), minPercentage: Number(g.minPercentage) || 0, operator: ['>=','>','<=','<'].includes(g.operator) ? g.operator : '>=' })) : base.grading.grades },
     marksheetSettings: { ...base.marksheetSettings, ...(input.marksheetSettings || {}), signatures: Array.isArray(input.marksheetSettings?.signatures) && input.marksheetSettings.signatures.length ? input.marksheetSettings.signatures.slice(0,4).map((sig: any, i: number) => ({ id: String(sig.id || `signature-${i+1}`), label: String(sig.label || ['Class Teacher','Exam Controller','Principal','Director'][i] || 'Designation'), name: String(sig.name || ''), signatureImage: String(sig.signatureImage || ''), enabled: sig.enabled !== false, widthMm: Math.min(60, Math.max(15, Number(sig.widthMm) || 32)), heightMm: Math.min(20, Math.max(5, Number(sig.heightMm) || 10)) })) : base.marksheetSettings.signatures.map((sig, i) => ({ ...sig, name: String([input.classInfo?.classTeacher || input.school?.classTeacherName || '', input.school?.examControllerName || '', input.school?.principalName || ''][i] || '') })), marksPrecision: [0,1,2].includes(Number(input.marksheetSettings?.marksPrecision)) ? Number(input.marksheetSettings.marksPrecision) as 0|1|2 : 0, watermarkMode: input.marksheetSettings?.watermarkMode === 'single' ? 'single' : 'repeat', watermarkOpacity: Number(input.marksheetSettings?.watermarkOpacity ?? 10), watermarkRepeatSize: Number(input.marksheetSettings?.watermarkRepeatSize ?? 60), watermarkCenterSize: Number(input.marksheetSettings?.watermarkCenterSize ?? 420), showIssueDate: input.marksheetSettings?.showIssueDate !== false, issueDate: /^\d{4}-\d{2}-\d{2}$/.test(String(input.marksheetSettings?.issueDate || '')) ? String(input.marksheetSettings.issueDate) : getLocalDateInputValue(), issueDateFormat: ['DD-MM-YYYY','DD/MM/YYYY','YYYY-MM-DD'].includes(input.marksheetSettings?.issueDateFormat) ? input.marksheetSettings.issueDateFormat : 'DD-MM-YYYY', issueDateLabel: String(input.marksheetSettings?.issueDateLabel ?? 'Date'), reportExams: Array.isArray(input.marksheetSettings?.reportExams) ? input.marksheetSettings.reportExams.filter((key: unknown): key is ExamKey => typeof key === 'string' && examKeys.includes(key as ExamKey)) : base.marksheetSettings.reportExams },
-    settings: { ...base.settings, ...(input.settings || {}) },
+    settings: { ...base.settings, ...(input.settings || {}), allowMultipleClassImport: input.settings?.allowMultipleClassImport === true },
     remarkRules: {
       ...base.remarkRules,
       ...(input.remarkRules || {}),

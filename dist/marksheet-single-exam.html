@@ -1,0 +1,459 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="color-scheme" content="light" />
+  <title>Marksheet : </title>
+  <meta name="author" content="Satish Kumar Sharma" />
+
+  <!-- Tailwind CSS v4 browser runtime -->
+  <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Lato:ital,wght@0,400;0,700;0,900;1,400&display=swap"
+    rel="stylesheet" />
+
+  <style>
+    /* ================================================================
+       MARKSHEET STYLES — Single-Exam A4 Optimized Layout
+       ================================================================ */
+
+    /* 1. Global typography and predictable box sizing */
+    *,
+    *::before,
+    *::after {
+      box-sizing: border-box;
+      font-family: Lato, sans-serif;
+    }
+
+    html,
+    body {
+      margin: 0;
+      padding: 0;
+    }
+
+    /* 2. A4 sheet dimensions — identical for screen preview and printing */
+    @page {
+      size: A4 portrait;
+      margin: 0;
+    }
+
+    body.A4 .sheet {
+      width: 210mm;
+      height: 296mm;
+    }
+
+    .sheet {
+      position: relative;
+      box-sizing: border-box;
+      margin: 0;
+      overflow: hidden;
+      break-before: auto;
+    }
+
+    /* 3. Main marksheet and watermark layer
+       The watermark is isolated on ::before, so its opacity does not fade
+       text, borders, student photo, marks, or signatures. */
+    .main-content {
+      position: relative;
+      isolation: isolate;
+      background: transparent;
+    }
+
+    .main-content::before {
+      content: "";
+      position: absolute;
+      inset: 0;
+      z-index: -1;
+      pointer-events: none;
+      background-image: url("nps-logo.webp");
+      background-position: center;
+      background-size: 60px 60px;
+      background-repeat: repeat;
+      opacity: 0.08;
+      -webkit-print-color-adjust: exact;
+      print-color-adjust: exact;
+    }
+
+    /* 4. Screen preview: neutral desk background around the A4 sheet */
+    @media screen {
+      body {
+        min-width: 210mm;
+        background: #e0e0e0;
+      }
+
+      .sheet {
+        margin: 5mm auto;
+        background: #fff;
+        box-shadow: 0 0.5mm 2mm rgba(0, 0, 0, 0.3);
+      }
+    }
+
+    /* 5. Print output: remove preview-only decoration without changing layout */
+    @media print {
+      html,
+      body {
+        width: 210mm;
+        margin: 0;
+        padding: 0;
+        background: #fff;
+      }
+
+      .sheet {
+        margin: 0;
+        box-shadow: none;
+        -webkit-print-color-adjust: exact;
+        print-color-adjust: exact;
+      }
+    }
+
+    .data {
+      color: #0f172a;
+      font-weight: 700;
+      font-variant-numeric: tabular-nums;
+    }
+
+    /* Modern compact marks chart — adapted for balanced A4 layout */
+    .marks-chart {
+      padding: 12px 14px 10px;
+      border: 1px solid #cbd5e1;
+      border-radius: 8px;
+      background: linear-gradient(180deg, #ffffff 0%, #f8fafc 100%);
+      color: #172033;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      height: 100%;
+      break-inside: avoid;
+      page-break-inside: avoid;
+      -webkit-print-color-adjust: exact;
+      print-color-adjust: exact;
+    }
+
+    .marks-chart__header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      margin-bottom: 8px;
+    }
+
+    .marks-chart__title {
+      font-size: 11px;
+      line-height: 1.2;
+      font-weight: 800;
+      letter-spacing: .055em;
+      text-transform: uppercase;
+      color: #1e293b;
+    }
+
+    .marks-chart__subtitle {
+      font-size: 9px;
+      line-height: 1.2;
+      color: #475569;
+      font-weight: 700;
+      white-space: nowrap;
+    }
+
+    .marks-chart__plot {
+      display: grid;
+      grid-template-columns: repeat(6, minmax(0, 1fr));
+      gap: 8px;
+      height: 128px;
+      align-items: stretch;
+    }
+
+    .marks-chart__item {
+      min-width: 0;
+      display: grid;
+      grid-template-rows: 14px minmax(0, 1fr) 16px;
+      text-align: center;
+    }
+
+    .marks-chart__value {
+      align-self: center;
+      font-size: 9px;
+      line-height: 1;
+      font-weight: 800;
+      color: #1e293b;
+      white-space: nowrap;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .marks-chart__track {
+      position: relative;
+      min-height: 0;
+      display: flex;
+      align-items: flex-end;
+      justify-content: center;
+      overflow: hidden;
+      border-radius: 4px 4px 0 0;
+      border-bottom: 1.5px solid #64748b;
+      background-image: linear-gradient(to top, rgba(148, 163, 184, .22) 1px, transparent 1px);
+      background-size: 100% 25%;
+    }
+
+    .marks-chart__bar {
+      position: relative;
+      width: min(60%, 28px);
+      height: var(--bar-height);
+      min-height: 2px;
+      border-radius: 4px 4px 0 0;
+      background: linear-gradient(180deg, #3b82f6 0%, #1d4ed8 100%);
+      box-shadow: 0 1px 2px rgba(37, 99, 235, .18);
+      -webkit-print-color-adjust: exact;
+      print-color-adjust: exact;
+    }
+
+    .marks-chart__subject {
+      padding-top: 4px;
+      font-size: 9px;
+      line-height: 1.1;
+      font-weight: 700;
+      color: #334155;
+      white-space: nowrap;
+    }
+
+    .marks-chart__summary {
+      margin-top: 8px;
+      padding-top: 6px;
+      border-top: 1px solid #e2e8f0;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      font-size: 9px;
+      line-height: 1.2;
+      color: #475569;
+    }
+
+    .marks-chart__summary strong {
+      color: #1d4ed8;
+      font-weight: 800;
+      font-variant-numeric: tabular-nums;
+    }
+
+    @media print {
+      .marks-chart {
+        background: #fff;
+        border-color: #94a3b8;
+      }
+
+      .marks-chart__bar {
+        background: #2563eb;
+        box-shadow: none;
+      }
+    }
+  </style>
+</head>
+
+<body class="A4 text-slate-900">
+  <!-- A4 Page Container -->
+  <section class="sheet p-4 flex flex-col">
+    <!-- Main Bordered Marksheet Frame -->
+    <div class="main-content border-2 border-slate-800 h-full flex flex-col justify-between">
+
+      <!-- TOP CONTENT GROUP -->
+      <div>
+        <!-- Top Meta Strip -->
+        <div class="flex justify-between items-center px-3 py-1 bg-slate-100 border-b border-slate-300 text-xs font-bold tracking-wide text-slate-700">
+          <div id="schoolEstablished"></div>
+          <div id="schoolRegistration"></div>
+        </div>
+
+        <!-- School Banner -->
+        <div class="flex justify-between items-center px-4 py-3">
+          <div class="shrink-0">
+            <img width="80" height="80"  alt="National Public School Logo" class="object-contain" />
+          </div>
+          <div class="grow flex flex-col text-center px-2">
+            <div class="school-name font-black text-3xl tracking-tight text-slate-900">
+              
+            </div>
+            <div class="school-address font-bold text-sm tracking-widest text-slate-700 mt-0.5">
+              
+            </div>
+            <div class="mt-2 inline-flex items-center justify-center gap-3 bg-slate-800 text-white text-xs font-bold px-4 py-1 rounded-full mx-auto tracking-wider uppercase">
+              <span>Report Card [ <span id="examTitle" class="text-amber-300"></span> ]</span>
+              <span>•</span>
+              <span>Session : <span id="academicSession" class="text-amber-300"></span></span>
+            </div>
+          </div>
+          <div class="shrink-0">
+            <img width="80" height="80"  alt="Beti Bachao Beti Padhao" class="object-contain" />
+          </div>
+        </div>
+
+        <!-- Student Profile Section (Full-Width Name Visibility — No DOB or Admission Details, No Truncation) -->
+        <div class="w-full border-t border-slate-400 bg-slate-50/60 py-3 px-4">
+          <div class="flex items-center gap-4">
+            <!-- Student Photo -->
+            <div class="shrink-0">
+              <div class="border-2 border-slate-400 h-36 aspect-[20/23] bg-white overflow-hidden rounded shadow-xs">
+                <img id="studentPhoto"  alt="Student Photograph" class="h-full w-full object-cover" />
+              </div>
+            </div>
+
+            <!-- Student Details Table: Single spacious column for full, untruncated names -->
+            <div class="grow border-x border-slate-300 px-5 py-1">
+              <table class="w-full text-left text-sm border-collapse">
+                <tbody>
+                  <tr class="border-b border-slate-200/80">
+                    <th class="py-1.5 w-32 font-semibold text-slate-600 align-top">Name</th>
+                    <td class="py-1.5 w-4 font-bold text-slate-500 align-top">:</td>
+                    <td id="stuName" class="py-1.5 data text-base break-words"></td>
+                  </tr>
+                  <tr class="border-b border-slate-200/80">
+                    <th class="py-1.5 font-semibold text-slate-600 align-top">Class &amp; Roll No.</th>
+                    <td class="py-1.5 font-bold text-slate-500 align-top">:</td>
+                    <td class="py-1.5">
+                      <span id="stuClass" class="data text-base"></span>
+                      <span class="mx-3 text-slate-300">|</span>
+                      <span class="font-semibold text-slate-600">Roll No. : </span>
+                      <span id="stuRoll" class="data text-base"></span>
+                    </td>
+                  </tr>
+                  <tr class="border-b border-slate-200/80">
+                    <th class="py-1.5 font-semibold text-slate-600 align-top">Mother's Name</th>
+                    <td class="py-1.5 font-bold text-slate-500 align-top">:</td>
+                    <td id="stuMother" class="py-1.5 data text-base break-words"></td>
+                  </tr>
+                  <tr>
+                    <th class="py-1.5 font-semibold text-slate-600 align-top">Father's Name</th>
+                    <td class="py-1.5 font-bold text-slate-500 align-top">:</td>
+                    <td id="stuFather" class="py-1.5 data text-base break-words"></td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+
+            <!-- Verification QR Code -->
+            <div class="shrink-0 flex flex-col items-center">
+              <div class="w-32 aspect-square border border-slate-400 bg-white p-1.5 rounded">
+                <img  alt="Verification QR Code" class="w-full h-full object-contain" />
+              </div>
+              <span class="text-[9px] font-bold text-slate-500 uppercase tracking-wider mt-1">Scan to Verify</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Single-Exam Marks Table (Horizontal Subject Columns: Full Marks, Obtained Weightage, Grade) -->
+        <div class="w-full border-t border-slate-400 pt-3 pb-2 px-4">
+          <table class="w-full table-fixed text-center border border-slate-400 text-sm">
+            <thead id="marksTableHead" class="bg-slate-800 text-white text-xs uppercase tracking-wider">
+              <!-- Populated dynamically via JS -->
+            </thead>
+            <tbody id="marksTableBody" class="divide-y divide-slate-300">
+              <!-- Populated dynamically via JS -->
+            </tbody>
+          </table>
+
+          <!-- Compact Grading Scale Bar directly under the marks table -->
+          <div class="mt-2 px-3 py-1.5 border border-slate-300 rounded-md bg-slate-50 text-xs text-slate-700 flex items-center justify-between">
+            <span class="font-bold text-slate-900 uppercase">Grading Scale :</span>
+            <span><strong>A1</strong> (&ge;91%)</span>
+            <span><strong>A2</strong> (&ge;81%)</span>
+            <span><strong>B1</strong> (&ge;71%)</span>
+            <span><strong>B2</strong> (&ge;61%)</span>
+            <span><strong>C1</strong> (&ge;51%)</span>
+            <span><strong>C2</strong> (&ge;41%)</span>
+            <span><strong>D</strong> (&ge;33%)</span>
+            <span><strong>E</strong> (&lt;33%)</span>
+          </div>
+        </div>
+
+        <!-- Middle Analytics Dashboard: Overall Summary & Remarks (Left) + Visual Bar Chart (Right) -->
+        <div class="w-full px-4 py-2 grid grid-cols-12 gap-3.5 items-stretch">
+
+          <!-- Left Column (5 cols): Overall Result Summary Table + Remarks Card -->
+          <div class="col-span-5 flex flex-col justify-between gap-2.5">
+            <!-- 2x2 Summary KPI Grid (Obtained Weightage, Weightage Percentage, Attendance, Grade) -->
+            <div class="grid grid-cols-2 gap-2 text-center">
+              <div class="border border-slate-300 rounded-md p-2.5 bg-slate-50">
+                <div class="text-[10px] font-bold uppercase text-slate-500 tracking-wide">Obtained Weightage</div>
+                <div id="summaryMarks" class="text-lg font-black text-slate-900 mt-0.5">—</div>
+              </div>
+              <div class="border border-slate-300 rounded-md p-2.5 bg-slate-50">
+                <div class="text-[10px] font-bold uppercase text-slate-500 tracking-wide">Weightage Percentage</div>
+                <div id="summaryPercentage" class="text-lg font-black text-blue-700 mt-0.5">—</div>
+              </div>
+              <div class="border border-slate-300 rounded-md p-2.5 bg-slate-50">
+                <div class="text-[10px] font-bold uppercase text-slate-500 tracking-wide">Attendance</div>
+                <div id="summaryAttendance" class="text-lg font-black text-slate-900 mt-0.5">—</div>
+              </div>
+              <div class="border border-slate-300 rounded-md p-2.5 bg-slate-50">
+                <div class="text-[10px] font-bold uppercase text-slate-500 tracking-wide">Overall Grade</div>
+                <div id="summaryGrade" class="text-lg font-black text-emerald-700 mt-0.5">—</div>
+              </div>
+            </div>
+
+            <!-- Remarks Box -->
+            <div class="border border-slate-300 rounded-md p-3 bg-amber-50/40 text-xs grow flex flex-col justify-center">
+              <div class="font-bold uppercase tracking-wider text-slate-700 mb-1">Remarks :</div>
+              <div id="teacherRemarks" class="data text-slate-900 text-sm leading-snug italic">
+                
+              </div>
+            </div>
+          </div>
+
+          <!-- Right Column (7 cols): Modern Vertical Subject Performance Chart -->
+          <div class="col-span-7">
+            <section class="marks-chart" aria-label="Subject-wise performance chart">
+              <div class="marks-chart__header">
+                <div class="marks-chart__title">Subject Performance</div>
+                <div class="marks-chart__subtitle" id="marksChartScale">Marks Obtained</div>
+              </div>
+              <div id="marksChart" class="marks-chart__plot"></div>
+              <div class="marks-chart__summary">
+                <span id="marksChartCaption">Performance across subjects</span>
+                <span>Average <strong id="marksChartAverage">—</strong></span>
+              </div>
+            </section>
+          </div>
+        </div>
+      </div>
+
+      <!-- BOTTOM CONTENT GROUP: Signatures & Optional Footer -->
+      <div>
+        <!-- Signature Section -->
+        <div class="w-full flex justify-around items-end px-4 pt-6 pb-4">
+          <div class="w-1/5 flex flex-col items-center">
+            <div id="issueDate" class="font-bold text-base data pb-1"></div>
+            <div class="w-full font-bold text-xs uppercase tracking-wider border-t-2 border-dashed border-slate-700 pt-1 text-center">
+              Date
+            </div>
+          </div>
+
+          <div class="w-1/5 flex flex-col items-center">
+            <img class="w-28 h-10 object-contain mb-0.5"  alt="Teacher Signature" />
+            <div class="w-full font-bold text-xs uppercase tracking-wider border-t-2 border-dashed border-slate-700 pt-1 text-center">
+              Teacher
+            </div>
+          </div>
+
+          <div class="w-1/5 flex flex-col items-center">
+            <img class="w-28 h-10 object-contain mb-0.5"  alt="Exam Controller Signature" />
+            <div class="w-full font-bold text-xs uppercase tracking-wider border-t-2 border-dashed border-slate-700 pt-1 text-center">
+              Exam Controller
+            </div>
+          </div>
+
+          <div class="w-1/5 flex flex-col items-center">
+            <img class="w-28 h-10 object-contain mb-0.5"  alt="Principal Signature" />
+            <div class="w-full font-bold text-xs uppercase tracking-wider border-t-2 border-dashed border-slate-700 pt-1 text-center">
+              Principal
+            </div>
+          </div>
+        </div>
+
+        
+      </div>
+
+    </div>
+  </section>
+
+</body>
+
+</html>
