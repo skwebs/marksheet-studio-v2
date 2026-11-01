@@ -99,3 +99,38 @@
 
 .student-validation-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:9px}.student-validation-row{display:flex;align-items:center;justify-content:space-between;gap:10px;border:1px solid #e4e7ec;border-radius:8px;padding:8px 10px;font-size:11px}.student-validation-row>span{font-weight:600;color:#344054}.student-validation-row select{max-width:132px;padding:6px 8px;border:1px solid #d0d5dd;border-radius:6px;background:#fff;font-size:11px}.setting-warning{font-size:11px}
 @media(max-width:560px){.student-validation-grid{grid-template-columns:1fr}}
+
+
+.class-config-permission{display:grid;gap:6px;padding:13px 15px;margin:14px 0;border:1px solid #d0d5dd;border-radius:9px;background:#f9fafb}.class-config-permission .toggle-label{display:flex;align-items:center;gap:9px;font-size:12px;color:#344054}.class-config-permission input{accent-color:#3448c5;width:16px;height:16px}.class-config-permission small{font-size:11px;line-height:1.5;color:#667085}.class-config-fieldset{border:0;padding:0;margin:0;min-width:0}.class-config-fieldset:disabled{opacity:.68}.class-config-fieldset:disabled .student-validation-row select{cursor:not-allowed;background:#f2f4f7}.class-config-fieldset:disabled .btn{pointer-events:none}
+
+/* Selected examination order shown on marksheet settings. */
+.report-exam-order-list{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:8px;margin:10px 0 8px}
+.report-exam-order-row{display:flex;align-items:center;gap:8px;min-width:0;border:1px solid #e4e7ec;border-radius:9px;padding:7px 9px;background:#fff}
+.report-exam-order-row .upload-exam-option{flex:1;min-width:0;border:0;padding:3px 0;background:transparent}
+.report-order-number{font-size:11px;color:#3448c5;white-space:nowrap;min-width:56px}
+.report-order-empty{font-size:10px;color:#98a2b3;white-space:nowrap}
+.report-exam-order-row .row-actions{gap:3px}
+.report-exam-order-row .icon-btn{width:27px;height:27px}
+@media(max-width:480px){.report-exam-order-list{grid-template-columns:1fr}.report-exam-order-row{gap:6px}.report-order-number{min-width:52px}}
+
+/* Active workspace class editor: disabled until explicitly enabled in School Profile. */
+.class-select input:disabled{opacity:.58;cursor:not-allowed}.class-select input:not(:disabled):focus{outline:2px solid #84adff;outline-offset:1px}
+
+/* Collapsible School Profile settings groups */
+.settings-group{margin:12px 16px;border:1px solid #e4e7ec;border-radius:11px;background:#fff;overflow:hidden}
+.settings-group>summary{list-style:none;display:flex;align-items:center;justify-content:space-between;gap:14px;padding:14px 16px;cursor:pointer;font-size:13px;font-weight:650;color:#344054;background:#f9fafb}
+.settings-group>summary::-webkit-details-marker{display:none}
+.settings-group-close{display:none;flex:0 0 auto;align-items:center;justify-content:center;gap:5px;padding:5px 9px;border:1px solid #d0d5dd;border-radius:7px;background:#fff;color:#475467;font-size:11px;font-weight:600;line-height:1.2;cursor:pointer}
+.settings-group[open]>summary .settings-group-close{display:inline-flex}
+.settings-group-close:hover{background:#f2f4f7;border-color:#98a2b3;color:#101828}
+.settings-group-close:focus-visible{outline:2px solid #84adff;outline-offset:2px}
+.settings-group>summary::after{content:'+';flex:0 0 auto;width:22px;height:22px;display:grid;place-items:center;border:1px solid #d0d5dd;border-radius:6px;background:#fff;color:#475467;font-size:16px;line-height:1}
+.settings-group[open]>summary::after{content:'−'}
+.settings-group>summary span{display:block}
+.settings-group>summary small{margin-left:auto;color:#667085;font-size:11px;font-weight:400;text-align:right;line-height:1.4}
+.settings-group[open]>summary{border-bottom:1px solid #eaecf0;background:#fff}
+.settings-group>.panel-subsection{border-top:0}
+.settings-group>.form-grid{padding:18px}
+.settings-group>.class-config-permission{margin:14px 16px}
+.settings-group>.field{margin:16px}
+@media(max-width:720px){.settings-group{margin:10px 10px}.settings-group>summary{align-items:flex-start;flex-wrap:wrap}.settings-group>summary small{width:calc(100% - 38px);margin-left:0;text-align:left}.settings-group>.form-grid{padding:14px}}

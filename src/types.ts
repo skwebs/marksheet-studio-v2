@@ -11,6 +11,7 @@ export type Student = {
   remarks: { overall: string; attendance: string; subjects: Record<string, string> };
 };
 export type ExamKey = string;
+export type ValidationLevel = 'required' | 'recommended' | 'optional';
 export type ExamPreset = 'six' | 'four' | 'two' | 'custom';
 export type ExamConfig = { name: string; shortName: string; maxMarks: number; weightage: number };
 export type Marks = Record<string, string | number | null> & { studentId: string; roll: string };
@@ -43,12 +44,12 @@ export type AppData = {
   marksheetSettings: {
     showPhoto: boolean; showAttendance: boolean; showRemarks: boolean; showGrade: boolean;
     tableOrientation: 'auto' | 'subjects-rows' | 'subjects-columns';
-    reportExams: ExamKey[]; showTotalColumn: boolean; showSubjectGrade: boolean;
+    reportExams: ExamKey[]; calculationExams: ExamKey[]; showTotalColumn: boolean; showSubjectGrade: boolean;
     showMarksRow: boolean; showGradeRow: boolean; showOverallSummary: boolean; marksPrecision: 0 | 1 | 2; watermarkMode: 'repeat' | 'single'; watermarkOpacity: number; watermarkRepeatSize: number; watermarkCenterSize: number;
     showIssueDate: boolean; issueDate: string; issueDateFormat: 'DD-MM-YYYY' | 'DD/MM/YYYY' | 'YYYY-MM-DD'; issueDateLabel: string;
     signatures: SignatureBlock[];
   };
-  settings: { sectionEnabled: boolean; allowMultipleClassImport: boolean; promotionExams: ExamKey[]; requiredStudentFields: string[]; recommendedStudentFields: string[]; requiredExamMarks: ExamKey[]; recommendedExamMarks: ExamKey[] };
+  settings: { sectionEnabled: boolean; allowMultipleClassImport: boolean; allowEditExistingClassConfig: boolean; allowChangeExistingStudentClass: boolean; allowEditActiveClass: boolean; validationLevels: Record<string, ValidationLevel>; promotionExams: ExamKey[]; requiredStudentFields: string[]; recommendedStudentFields: string[]; requiredExamMarks: ExamKey[]; recommendedExamMarks: ExamKey[] };
   remarkRules: {
     overall: { grade: string; text: string }[];
     weakSubjectBelowPercentage: number;

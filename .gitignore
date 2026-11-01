@@ -1,5 +1,14 @@
 node_modules
 .vercel
 dist
-.env*
 *.zip
+
+# Environment variables
+.env*
+!.env.example
+
+# Build output
+dist/
+
+# Local IDE files
+.vscode/

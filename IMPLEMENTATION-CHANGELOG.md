@@ -164,3 +164,94 @@ Source archive: `marksheet-studio-v2-weightage-calculation-fix(1).zip` (the user
 - Removed whitespace around fraction separators in the multi-exam Grand Total row and the Obtained Marks / Attendance summary values (`x/y`, not `x / y`).
 - Single-exam Full Marks values now use the pre-printed Lato/static typography instead of the Courier Prime typed-data style. Obtained Marks and Grade remain in the typed-data style.
 - No calculation, grading, promotion, import, or persistence logic was changed in this correction.
+
+
+## Grand Total fraction removal (2026-11-01)
+
+- Removed denominator/fraction display from every exam total cell in the multi-exam Grand Total row. Each cell now displays only the obtained total, matching the regular exam result cells.
+- Removed the fraction from the combined Total cell as well; it continues to show obtained marks only.
+- Applied the same behavior in the primary TypeScript renderer and both standalone HTML template fallbacks.
+- This is a display-only change. Maximum marks remain available in the exam column headers and `Total (maximum)` header; calculations, percentages, grades and QR result calculations are unchanged.
+
+
+## Global data validation & existing-class configuration permission (2026-11-01)
+
+### Unified field-level validation
+- Extended the Required / Recommended / Optional model beyond student details to school identity and header labels, exam metadata, academic configuration, attendance, additional information, and enabled signature blocks.
+- Existing per-exam marks completeness remains independently configurable for each active examination.
+- Readiness checks now evaluate only report-selected exams for exam names and maximum marks, and only check conditional content when the corresponding marksheet section is enabled.
+- Required missing global fields block preview/print; recommended missing fields prompt for confirmation; optional fields do not block or warn.
+- The student validation UI continues to use the same three levels. Legacy `requiredStudentFields` and `recommendedStudentFields` arrays are kept synchronized for backward compatibility.
+- Older backups without `validationLevels` are migrated from their existing student validation arrays; the new settings are included automatically in ZIP/JSON backups.
+
+### Existing-class configuration permission
+- Added **Enable editing for existing classes**, default OFF.
+- When the active workspace contains students and the option is OFF, the class-configuration controls in the School Profile panel are disabled, including validation rules, section configuration, exam setup, subjects, grading, marksheet layout, issue date and signature configuration.
+- Enabling the option unlocks configuration only. Student records, examination marks and attendance entry remain outside the lock and retain their existing editing workflows.
+- The permission is stored per class workspace. Empty/new workspaces remain configurable even while the permission is OFF.
+- Automatic remark rule configuration is also protected while attendance data entry remains editable.
+
+### Scope notes
+- The current data model does not contain examination-date or student-achievement fields. No fictitious fields were added solely for validation; these can be added to validation once those data features exist.
+
+### Verification
+- Strict TypeScript check passed for `types.ts`, `data.ts` and `calculations.ts`.
+- TypeScript/TSX syntax transpilation passed for `main.tsx`, `calculations.ts`, `data.ts` and `types.ts`.
+- Readiness tests passed for default data, required school data, recommended school data, optional fields, required student data, and migration from legacy validation arrays.
+- Confirmed JSX fieldset tags are balanced.
+- Full application build remains unverified because project dependencies are not installed and npm cache does not contain the required packages. `npm ci --offline` could not resolve uncached packages. Run `npm ci` and `npm run build` in a network-enabled development environment.
+
+
+## 2026-11-01 — Exam header ordering and existing-class change permission
+
+### Implemented
+- Added selected-exam order numbers to Marksheet Layout. Unselected exams show no order number; selected exams are numbered sequentially.
+- Added move-up/move-down controls for the selected marksheet header sequence. The order stored in `marksheetSettings.reportExams` is the exact order used by both renderers.
+- Newly selected exams are inserted according to the configured examination order, while existing manually rearranged selections retain their relative order.
+- Added a separate `calculationExams` setting for marksheet totals, percentage, subject grades, overall grade, summary and remarks. Hiding a header column no longer removes that examination from calculations. Newly selected display exams are added to calculations by default; hiding them does not remove them from calculations. Calculation inclusion can be changed independently.
+- Legacy backups without `calculationExams` migrate by copying their previous `reportExams` selection, preserving prior calculation behavior.
+- Added `Allow changing class of existing students` (default OFF), separate from `Enable editing for existing classes`.
+- When enabled, a Move class action appears on each existing student row. It moves only the selected student to another class workspace in the same academic session, including the student profile, photo, attendance, remarks and matching examination result rows.
+- Previous academic-session workspaces remain unchanged. Destination roll/student-ID conflicts are rejected. The move is persisted across source and destination workspaces in one IndexedDB transaction, with a destination snapshot version check to prevent stale overwrites.
+- The active workspace Class/Section/Session identity remains protected; this permission does not unlock the whole workspace class field. Updated the Help guide and row-action tooltip.
+
+### Verification notes
+- TypeScript transpilation syntax checks passed for all six modified TypeScript/TSX modules.
+- Default configuration and legacy backup migration checks passed.
+- Static assertions passed for hidden-column calculation preservation, destination workspace conflict protection and the per-student move action.
+- Both marksheet HTML templates parsed successfully with unique IDs.
+- ZIP integrity passed after packaging.
+- Full Vite production build and browser interaction tests remain unverified because `node_modules` is not installed in this environment.
+
+
+## Follow-up correction — Active class editing and QR exam type
+
+- Added a separate `allowEditActiveClass` permission, OFF by default, to control the Class field in the left sidebar. This is distinct from class-configuration editing and individual student class transfers.
+- When enabled, the active workspace Class field can be edited. Committing the change renames the current class/session workspace while preserving its students, marks, attendance, subjects and settings.
+- Workspace rename is transactional and refuses to overwrite an existing destination class/session workspace. The old workspace key is removed only after the destination snapshot is written successfully.
+- The `Exam type (shown in QR code)` setting was already used by the single-exam QR renderer; the multi-exam QR renderer previously derived its label from selected exam keys and ignored the setting. It now uses the configured exam type, falling back to the selected exam labels only when the field is blank.
+- Legacy data migration defaults the new active-class editing permission to OFF.
+- Validation: source-level assertions, TypeScript/TSX transpilation syntax checks and ZIP integrity. Full dependency-backed production build and browser workflow testing remain unverified in this environment.
+
+
+## Follow-up correction — Conditional active class editing and collapsible settings
+
+### Implemented
+- Restored the original conditional class-editing behavior: when the active workspace has no student records, the sidebar Class field is editable by default, regardless of the permission checkbox.
+- When student records exist, the sidebar Class field is locked by default. Enabling `Allow editing class when student records exist` unlocks it for that populated workspace.
+- The commit handler enforces the same rule as the UI, so a disabled field cannot be bypassed by stale input state. Existing destination-workspace collision protection remains in place.
+- Reorganized School Profile settings into native collapsible groups: School identity & header; School images & watermark; Class permissions & import; Student data & validation; Examination configuration; Subjects & grading; Marksheet layout & columns; Issue date & signatures. Groups are collapsed initially and can be expanded independently.
+- Updated sidebar helper text and the Help guide to explain the empty/populated class behavior.
+
+### Verification
+- TypeScript/TSX transpilation diagnostics: 0.
+- Confirmed eight collapsible groups have matching opening/closing tags.
+- Confirmed class-field disabled state and commit guard both use `students.length > 0 && !allowEditActiveClass`.
+- Both HTML templates parsed successfully.
+- Full Vite build and browser interaction testing remain unverified because project dependencies are not installed in this environment.
+
+
+## Collapsible settings close controls
+- Added a visible **Close** control to the header of every expanded School Profile settings group.
+- Activating Close collapses only that group; other groups retain their current open/closed state.
+- The control is hidden while a group is collapsed and is keyboard-focusable when visible.

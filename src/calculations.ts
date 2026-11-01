@@ -39,20 +39,87 @@ export function calculatePromotionScore(data: AppData, student: Student, keys: E
   const performance = calculateStudentPerformance(data, student, keys);
   return { obtained: performance.obtained, maximum: performance.maximum, percentage: performance.percentage };
 }
+export function getValidationLevel(data: AppData, key: string): 'required' | 'recommended' | 'optional' {
+  const level = data.settings.validationLevels?.[key];
+  if (level === 'required' || level === 'recommended' || level === 'optional') return level;
+  return 'optional';
+}
+
 export function getDataReadiness(data: AppData, studentIds?: string[]) {
   const students = studentIds ? data.students.filter(student => studentIds.includes(student.studentId)) : data.students;
-  const missingRequiredStudents = students.filter(student => data.settings.requiredStudentFields.some(field => !String((student as any)[field] ?? '').trim()));
-  const missingRecommendedStudents = students.flatMap(student => data.settings.recommendedStudentFields.filter(field => !String((student as any)[field] ?? '').trim()).map(field => ({ student, field })));
-  const requiredMarksMissing: Array<{ student: Student; exam: string; subject: string }> = [];
-  const recommendedMarksMissing: Array<{ student: Student; exam: string; subject: string }> = [];
+  const studentFields = [
+    ['roll', 'Roll'], ['name', 'Student name'], ['father', 'Father name'], ['mother', 'Mother name'],
+    ['dob', 'Date of birth'], ['gender', 'Gender'], ['photo', 'Student photo']
+  ] as const;
+  const missingRequiredStudents = students.filter(student => studentFields.some(([field]) =>
+    getValidationLevel(data, `student.${field}`) === 'required' && !String((student as any)[field] ?? '').trim()
+  ));
+  const missingRecommendedStudents = students.flatMap(student => studentFields
+    .filter(([field]) => getValidationLevel(data, `student.${field}`) === 'recommended' && !String((student as any)[field] ?? '').trim())
+    .map(([field]) => ({ student, field })));
+
+  const missingRequiredItems: Array<{ key: string; label: string; detail?: string }> = [];
+  const missingRecommendedItems: Array<{ key: string; label: string; detail?: string }> = [];
+  const check = (key: string, label: string, present: boolean, detail?: string) => {
+    if (present) return;
+    const item = { key, label, ...(detail ? { detail } : {}) };
+    const level = getValidationLevel(data, key);
+    if (level === 'required') missingRequiredItems.push(item);
+    else if (level === 'recommended') missingRecommendedItems.push(item);
+  };
+
+  // School identity and the school metadata that is actually enabled for printing.
+  check('school.name', 'School name', Boolean(String(data.school.name ?? '').trim()));
+  check('school.address', 'School address', Boolean(String(data.school.address ?? '').trim()));
+  check('school.established', 'Established year', data.school.headerMeta?.showLeft === false || !data.school.headerMeta?.showLeft || Boolean(String(data.school.established ?? '').trim()));
+  check('school.affiliation', 'Affiliation', data.school.headerMeta?.showMiddle === false || !data.school.headerMeta?.showMiddle || Boolean(String(data.school.affiliation ?? '').trim()));
+  check('school.registrationNumber', 'Registration number', data.school.headerMeta?.showRight === false || !data.school.headerMeta?.showRight || Boolean(String(data.school.registrationNumber ?? '').trim()));
+  check('school.headerLeftLabel', 'Header left label', data.school.headerMeta?.showLeft === false || !data.school.headerMeta?.showLeft || Boolean(data.school.headerMeta?.leftLabel?.trim()));
+  check('school.headerMiddleLabel', 'Header middle label', data.school.headerMeta?.showMiddle === false || !data.school.headerMeta?.showMiddle || Boolean(data.school.headerMeta?.middleLabel?.trim()));
+  check('school.headerRightLabel', 'Header right label', data.school.headerMeta?.showRight === false || !data.school.headerMeta?.showRight || Boolean(data.school.headerMeta?.rightLabel?.trim()));
+  check('school.managementLine', 'Management line', !data.school.headerMeta?.showManagementLine || Boolean(data.school.headerMeta?.managementLine?.trim()));
+  check('school.logoLeft', 'Left school logo', data.school.showLeftLogo === false || Boolean(data.school.logoLeft || data.school.logo));
+  check('school.logoRight', 'Right school logo', data.school.showRightLogo === false || data.school.rightLogoUseLeftLogo !== false || Boolean(data.school.logoRight));
+  check('school.watermark', 'Watermark image', data.school.showWatermark === false || data.school.watermarkUseLeftLogo !== false || Boolean(data.school.watermark));
+
+  // Session/class/exam metadata and academic configuration.
+  check('exam.type', 'Examination type', Boolean(String(data.examType ?? '').trim()));
+  check('exam.session', 'Academic session', Boolean(String(data.academicSession ?? '').trim()));
+  check('exam.class', 'Class', Boolean(String(data.classInfo.className ?? '').trim()));
+  check('exam.section', 'Section', !data.settings.sectionEnabled || Boolean(String(data.classInfo.section ?? '').trim()));
   const activeExams = getExamKeys(data);
   const reportExams = (data.marksheetSettings.reportExams?.length ? data.marksheetSettings.reportExams : activeExams).filter(key => activeExams.includes(key));
-  for (const student of students) for (const exam of reportExams) for (const subject of data.subjects.filter(item => item.enabled !== false)) {
+  const calculationExams = (data.marksheetSettings.calculationExams?.length ? data.marksheetSettings.calculationExams : reportExams).filter(key => activeExams.includes(key));
+  const relevantExams = [...new Set([...reportExams, ...calculationExams])];
+  check('exam.names', 'Examination names', relevantExams.every(key => Boolean(data.exams[key]?.name?.trim() && data.exams[key]?.shortName?.trim())));
+  check('exam.maximumMarks', 'Examination maximum marks', relevantExams.every(key => Number(data.exams[key]?.maxMarks) > 0));
+  check('academic.subjects', 'Subject names', data.subjects.some(subject => subject.enabled !== false) && data.subjects.filter(subject => subject.enabled !== false).every(subject => Boolean(subject.name.trim())));
+  check('academic.gradingScale', 'Grading scale', data.grading.grades.length > 0 && data.grading.grades.every(rule => Boolean(rule.grade.trim())));
+
+  const requiredMarksMissing: Array<{ student: Student; exam: string; subject: string }> = [];
+  const recommendedMarksMissing: Array<{ student: Student; exam: string; subject: string }> = [];
+  for (const student of students) for (const exam of relevantExams) for (const subject of data.subjects.filter(item => item.enabled !== false)) {
     const mark = data.results[exam]?.find(row => row.studentId === student.studentId)?.[subject.id];
     if (!hasMark(mark)) {
       if (data.settings.requiredExamMarks.includes(exam)) requiredMarksMissing.push({ student, exam, subject: subject.name });
       else if (data.settings.recommendedExamMarks.includes(exam)) recommendedMarksMissing.push({ student, exam, subject: subject.name });
     }
   }
-  return { missingRequiredStudents, missingRecommendedStudents, requiredMarksMissing, recommendedMarksMissing, totalStudents: students.length };
+
+  // Attendance is validated only when it is part of the generated marksheet.
+  check('attendance.workingDays', 'Total working days', !data.marksheetSettings.showAttendance || Number(data.classInfo.totalWorkingDays) > 0);
+  check('attendance.presentDays', 'Student attendance entries', !data.marksheetSettings.showAttendance || students.every(student => Number.isFinite(Number(student.attendance?.daysPresent))));
+  check('additional.issueDate', 'Issue date', !data.marksheetSettings.showIssueDate || Boolean(data.marksheetSettings.issueDate));
+  check('additional.remarks', 'Remarks configuration', !data.marksheetSettings.showRemarks || Boolean(data.remarkRules.overall.length || String(data.remarkRules.weakSubjectTemplate ?? '').trim() || String(data.remarkRules.attendanceTemplate ?? '').trim()));
+
+  for (const signature of data.marksheetSettings.signatures.filter(item => item.enabled)) {
+    check('signature.label', `Signature designation · ${signature.label || 'unnamed block'}`, Boolean(signature.label.trim()));
+    check('signature.name', `Signature name · ${signature.label || 'designation'}`, Boolean(signature.name.trim()));
+    check('signature.image', `Signature image · ${signature.label || 'designation'}`, Boolean(signature.signatureImage));
+  }
+
+  return {
+    missingRequiredStudents, missingRecommendedStudents, missingRequiredItems, missingRecommendedItems,
+    requiredMarksMissing, recommendedMarksMissing, totalStudents: students.length
+  };
 }

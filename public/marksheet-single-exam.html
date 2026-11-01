@@ -647,10 +647,10 @@
         tfoot.innerHTML = `
           <tr>
             <td class="py-1.5 px-3 text-left border-r border-slate-400 uppercase tracking-wider text-xs text-slate-800">Grand Total</td>
-            <td class="py-1.5 px-2 border-r border-slate-400"><span class="data-scaled">${formatNumber(grandPa1)}</span><span class="static-print">/${maxPa1All}</span></td>
-            <td class="py-1.5 px-2 border-r border-slate-400"><span class="data-scaled">${formatNumber(grandPa2)}</span><span class="static-print">/${maxPa2All}</span></td>
-            <td class="py-1.5 px-2 border-r border-slate-400"><span class="data-scaled">${formatNumber(grandHy)}</span><span class="static-print">/${maxHyAll}</span></td>
-            <td class="py-1.5 px-2 border-r border-slate-400 bg-blue-100/60"><span class="data-scaled text-blue-950">${formatNumber(grandObtained)}</span><span class="static-print">/${grandMax}</span></td>
+            <td class="py-1.5 px-2 border-r border-slate-400 data-scaled">${formatNumber(grandPa1)}</td>
+            <td class="py-1.5 px-2 border-r border-slate-400 data-scaled">${formatNumber(grandPa2)}</td>
+            <td class="py-1.5 px-2 border-r border-slate-400 data-scaled">${formatNumber(grandHy)}</td>
+            <td class="py-1.5 px-2 border-r border-slate-400 bg-blue-100/60 data-scaled text-blue-950">${formatNumber(grandObtained)}</td>
             <td class="py-1.5 px-2 data-scaled text-emerald-800">${overallGrade}</td>
           </tr>
         `;
