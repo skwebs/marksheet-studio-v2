@@ -1,8 +1,10 @@
-import type { AppData, Student, ExamKey, Marks } from './types';
+import type { AppData, Student, ExamKey, Marks, ExamPreset } from './types';
 
 const getLocalDateInputValue = () => { const now = new Date(); return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`; };
 
 export const examKeys: ExamKey[] = ['pa1', 'pa2', 'hy', 'pa3', 'pa4', 'final'];
+export const examPresets: Record<Exclude<ExamPreset, 'custom'>, ExamKey[]> = { six: [...examKeys], four: ['pa1', 'hy', 'pa3', 'final'], two: ['hy', 'final'] };
+export const getExamKeys = (data: Pick<AppData, 'examOrder' | 'exams'>): ExamKey[] => { const ordered = Array.isArray(data.examOrder) ? data.examOrder.filter(key => Boolean(data.exams?.[key])) : []; return ordered.length ? ordered : Object.keys(data.exams || {}); };
 export const defaultSubjects = [
   { id: 'hindi', name: 'Hindi' }, { id: 'english', name: 'English' },
   { id: 'maths', name: 'Maths' }, { id: 'science', name: 'Science' },
@@ -47,10 +49,13 @@ export function createDefaultData(): AppData {
     school: {
       name: 'NATIONAL PUBLIC SCHOOL', address: 'SINHPUR, KANHAULI, VAISHALI',
       affiliation: 'CBSE', registrationNumber: '054631', established: '2017',
-      logo: '', logoLeft: '', logoRight: '', watermark: '', watermarkUseLeftLogo: true, rightLogoUseLeftLogo: true, showLeftLogo: true, showRightLogo: true, showWatermark: true, principalName: '', examControllerName: '', classTeacherName: ''
+      logo: '', logoLeft: '', logoRight: '', watermark: '', watermarkUseLeftLogo: true, rightLogoUseLeftLogo: true, showLeftLogo: true, showRightLogo: true, showWatermark: true, principalName: '', examControllerName: '', classTeacherName: '',
+      headerMeta: { leftLabel: 'Established', middleLabel: 'Affiliation', rightLabel: 'Registration No.', showLeft: true, showMiddle: true, showRight: true, managementLine: '', showManagementLine: false }
     },
     subjects: subjectsForClass('6'),
     classSubjectConfigs: { '6': subjectsForClass('6') },
+    examPreset: 'six',
+    examOrder: [...examKeys],
     exams: {
       pa1: { name: 'Periodic Assessment I', shortName: 'PA-I', maxMarks: 40, weightage: 5 },
       pa2: { name: 'Periodic Assessment II', shortName: 'PA-II', maxMarks: 40, weightage: 5 },
@@ -71,7 +76,7 @@ export function createDefaultData(): AppData {
       { id: 'exam-controller', label: 'Exam Controller', name: '', enabled: true, widthMm: 32, heightMm: 10 },
       { id: 'principal', label: 'Principal', name: '', enabled: true, widthMm: 32, heightMm: 10 }
     ] },
-    settings: { sectionEnabled: false },
+    settings: { sectionEnabled: false, allowMultipleClassImport: false, promotionExams: [...examKeys], requiredStudentFields: ['roll', 'name'], recommendedStudentFields: ['father','mother'], requiredExamMarks: [], recommendedExamMarks: ['pa1','pa2','hy'] },
     remarkRules: {
       overall: [
         { grade: 'A+', text: 'Outstanding overall performance.' },
@@ -108,15 +113,17 @@ export function normalizeData(input: any): AppData {
     ...base, ...input,
     examType: String(input.examType || base.examType),
     classInfo: { ...base.classInfo, ...(input.classInfo || {}) },
-    school: { ...base.school, ...(input.school || {}), logoLeft: input.school?.logoLeft || input.school?.logo || '', watermarkUseLeftLogo: input.school?.watermarkUseLeftLogo ?? !Boolean(input.school?.watermark), rightLogoUseLeftLogo: input.school?.rightLogoUseLeftLogo ?? true },
+    school: { ...base.school, ...(input.school || {}), headerMeta: { ...base.school.headerMeta, ...(input.school?.headerMeta || {}) }, logoLeft: input.school?.logoLeft || input.school?.logo || '', watermarkUseLeftLogo: input.school?.watermarkUseLeftLogo ?? !Boolean(input.school?.watermark), rightLogoUseLeftLogo: input.school?.rightLogoUseLeftLogo ?? true },
     subjects: subjectIdsMatch ? incomingSubjects.map((subject: any) => ({ id: String(subject.id || crypto.randomUUID()), name: String(subject.name || ''), ...(subject.enabled === undefined ? {} : { enabled: Boolean(subject.enabled) }) })) : expectedSubjects,
     classSubjectConfigs: { ...(input.classSubjectConfigs || {}), [className]: subjectIdsMatch ? incomingSubjects.map((subject: any) => ({ id: String(subject.id || crypto.randomUUID()), name: String(subject.name || ''), ...(subject.enabled === undefined ? {} : { enabled: Boolean(subject.enabled) }) })) : expectedSubjects },
-    exams: Object.fromEntries(examKeys.map(k => { const old = input.exams?.[k] || {}; const isLegacy = old.weightage === undefined && old.maxMarks !== undefined; const legacyContribution = Number(old.maxMarks); return [k, { ...base.exams[k], ...old, maxMarks: isLegacy ? base.exams[k].maxMarks : Number(old.maxMarks ?? base.exams[k].maxMarks), weightage: isLegacy ? legacyContribution : Number(old.weightage ?? base.exams[k].weightage) }]; })) as AppData['exams'],
+    examPreset: (['six','four','two','custom'].includes(input.examPreset) ? input.examPreset : 'six') as ExamPreset,
+    examOrder: Array.isArray(input.examOrder) && input.examOrder.length ? input.examOrder.map(String).filter((key: string) => Boolean(input.exams?.[key])) : (Object.keys(input.exams || {}).length ? Object.keys(input.exams) : [...examKeys]),
+    exams: Object.fromEntries([...new Set([...(Array.isArray(input.examOrder) ? input.examOrder : []), ...Object.keys(input.exams || {})])].map((k: string) => { const old = input.exams?.[k] || {}; const fallback = (base.exams as Record<string, any>)[k] || { name: k, shortName: k.toUpperCase(), maxMarks: 100, weightage: 100 }; const isLegacy = old.weightage === undefined && old.maxMarks !== undefined; const legacyContribution = Number(old.maxMarks); return [k, { ...fallback, ...old, name: String(old.name ?? fallback.name), shortName: String(old.shortName ?? fallback.shortName), maxMarks: isLegacy ? fallback.maxMarks : Number(old.maxMarks ?? fallback.maxMarks), weightage: isLegacy ? legacyContribution : Number(old.weightage ?? fallback.weightage) }]; })) as AppData['exams'],
     students,
-    results: Object.fromEntries(examKeys.map(k => [k, Array.isArray(input.results?.[k]) ? input.results[k] : []])) as AppData['results'],
+    results: Object.fromEntries([...new Set([...(Array.isArray(input.examOrder) ? input.examOrder : []), ...Object.keys(input.exams || {}), ...Object.keys(input.results || {})])].map((k: string) => [k, Array.isArray(input.results?.[k]) ? input.results[k] : []])) as AppData['results'],
     grading: { ...base.grading, ...(input.grading || {}), grades: Array.isArray(input.grading?.grades) && input.grading.grades.length ? input.grading.grades.map((g: any) => ({ grade: String(g.grade || ''), minPercentage: Number(g.minPercentage) || 0, operator: ['>=','>','<=','<'].includes(g.operator) ? g.operator : '>=' })) : base.grading.grades },
-    marksheetSettings: { ...base.marksheetSettings, ...(input.marksheetSettings || {}), signatures: Array.isArray(input.marksheetSettings?.signatures) && input.marksheetSettings.signatures.length ? input.marksheetSettings.signatures.slice(0,4).map((sig: any, i: number) => ({ id: String(sig.id || `signature-${i+1}`), label: String(sig.label || ['Class Teacher','Exam Controller','Principal','Director'][i] || 'Designation'), name: String(sig.name || ''), signatureImage: String(sig.signatureImage || ''), enabled: sig.enabled !== false, widthMm: Math.min(60, Math.max(15, Number(sig.widthMm) || 32)), heightMm: Math.min(20, Math.max(5, Number(sig.heightMm) || 10)) })) : base.marksheetSettings.signatures.map((sig, i) => ({ ...sig, name: String([input.classInfo?.classTeacher || input.school?.classTeacherName || '', input.school?.examControllerName || '', input.school?.principalName || ''][i] || '') })), marksPrecision: [0,1,2].includes(Number(input.marksheetSettings?.marksPrecision)) ? Number(input.marksheetSettings.marksPrecision) as 0|1|2 : 0, watermarkMode: input.marksheetSettings?.watermarkMode === 'single' ? 'single' : 'repeat', watermarkOpacity: Number(input.marksheetSettings?.watermarkOpacity ?? 10), watermarkRepeatSize: Number(input.marksheetSettings?.watermarkRepeatSize ?? 60), watermarkCenterSize: Number(input.marksheetSettings?.watermarkCenterSize ?? 420), showIssueDate: input.marksheetSettings?.showIssueDate !== false, issueDate: /^\d{4}-\d{2}-\d{2}$/.test(String(input.marksheetSettings?.issueDate || '')) ? String(input.marksheetSettings.issueDate) : getLocalDateInputValue(), issueDateFormat: ['DD-MM-YYYY','DD/MM/YYYY','YYYY-MM-DD'].includes(input.marksheetSettings?.issueDateFormat) ? input.marksheetSettings.issueDateFormat : 'DD-MM-YYYY', issueDateLabel: String(input.marksheetSettings?.issueDateLabel ?? 'Date'), reportExams: Array.isArray(input.marksheetSettings?.reportExams) ? input.marksheetSettings.reportExams.filter((key: unknown): key is ExamKey => typeof key === 'string' && examKeys.includes(key as ExamKey)) : base.marksheetSettings.reportExams },
-    settings: { ...base.settings, ...(input.settings || {}) },
+    marksheetSettings: { ...base.marksheetSettings, ...(input.marksheetSettings || {}), signatures: Array.isArray(input.marksheetSettings?.signatures) && input.marksheetSettings.signatures.length ? input.marksheetSettings.signatures.slice(0,4).map((sig: any, i: number) => ({ id: String(sig.id || `signature-${i+1}`), label: String(sig.label || ['Class Teacher','Exam Controller','Principal','Director'][i] || 'Designation'), name: String(sig.name || ''), signatureImage: String(sig.signatureImage || ''), enabled: sig.enabled !== false, widthMm: Math.min(60, Math.max(15, Number(sig.widthMm) || 32)), heightMm: Math.min(20, Math.max(5, Number(sig.heightMm) || 10)) })) : base.marksheetSettings.signatures.map((sig, i) => ({ ...sig, name: String([input.classInfo?.classTeacher || input.school?.classTeacherName || '', input.school?.examControllerName || '', input.school?.principalName || ''][i] || '') })), marksPrecision: [0,1,2].includes(Number(input.marksheetSettings?.marksPrecision)) ? Number(input.marksheetSettings.marksPrecision) as 0|1|2 : 0, watermarkMode: input.marksheetSettings?.watermarkMode === 'single' ? 'single' : 'repeat', watermarkOpacity: Number(input.marksheetSettings?.watermarkOpacity ?? 10), watermarkRepeatSize: Number(input.marksheetSettings?.watermarkRepeatSize ?? 60), watermarkCenterSize: Number(input.marksheetSettings?.watermarkCenterSize ?? 420), showIssueDate: input.marksheetSettings?.showIssueDate !== false, issueDate: /^\d{4}-\d{2}-\d{2}$/.test(String(input.marksheetSettings?.issueDate || '')) ? String(input.marksheetSettings.issueDate) : getLocalDateInputValue(), issueDateFormat: ['DD-MM-YYYY','DD/MM/YYYY','YYYY-MM-DD'].includes(input.marksheetSettings?.issueDateFormat) ? input.marksheetSettings.issueDateFormat : 'DD-MM-YYYY', issueDateLabel: String(input.marksheetSettings?.issueDateLabel ?? 'Date'), reportExams: Array.isArray(input.marksheetSettings?.reportExams) ? input.marksheetSettings.reportExams.filter((key: unknown): key is ExamKey => typeof key === 'string' && Boolean(input.exams?.[key])) : base.marksheetSettings.reportExams },
+    settings: { ...base.settings, ...(input.settings || {}), allowMultipleClassImport: input.settings?.allowMultipleClassImport === true, promotionExams: Array.isArray(input.settings?.promotionExams) ? input.settings.promotionExams.filter((key: string) => Boolean(input.exams?.[key])) : (Array.isArray(input.examOrder) ? input.examOrder : [...examKeys]), requiredStudentFields: Array.isArray(input.settings?.requiredStudentFields) ? input.settings.requiredStudentFields.map(String) : ['roll','name'], recommendedStudentFields: Array.isArray(input.settings?.recommendedStudentFields) ? input.settings.recommendedStudentFields.map(String) : ['father','mother'], requiredExamMarks: Array.isArray(input.settings?.requiredExamMarks) ? input.settings.requiredExamMarks.filter((key: string) => Boolean(input.exams?.[key])) : [], recommendedExamMarks: Array.isArray(input.settings?.recommendedExamMarks) ? input.settings.recommendedExamMarks.filter((key: string) => Boolean(input.exams?.[key])) : (Array.isArray(input.marksheetSettings?.reportExams) ? input.marksheetSettings.reportExams.filter((key: string) => Boolean(input.exams?.[key])) : ['pa1','pa2','hy'].filter(key => Boolean(input.exams?.[key]))) },
     remarkRules: {
       ...base.remarkRules,
       ...(input.remarkRules || {}),
@@ -133,12 +140,18 @@ export function normalizeData(input: any): AppData {
         : base.remarkRules.overall
     }
   };
+  const activeExamKeys = getExamKeys(result);
+  result.marksheetSettings.reportExams = result.marksheetSettings.reportExams.filter(key => activeExamKeys.includes(key));
+  if (!result.marksheetSettings.reportExams.length && activeExamKeys.length) result.marksheetSettings.reportExams = [activeExamKeys[0]];
+  result.settings.promotionExams = result.settings.promotionExams.filter(key => activeExamKeys.includes(key));
+  result.settings.requiredExamMarks = result.settings.requiredExamMarks.filter(key => activeExamKeys.includes(key));
+  result.settings.recommendedExamMarks = result.settings.recommendedExamMarks.filter(key => activeExamKeys.includes(key));
   result.students = result.students.map((student: Student) => {
     const totalDays = Math.max(0, Number(result.classInfo.totalWorkingDays) || 0);
     const present = Math.min(totalDays, Math.max(0, Number(student.attendance.daysPresent) || 0));
     return { ...student, attendance: { ...student.attendance, workingDays: totalDays, daysPresent: present, daysAbsent: Math.max(0, totalDays - present) } };
   });
-  for (const key of examKeys) {
+  for (const key of getExamKeys(result)) {
     const legacyMax = Number(input.exams?.[key]?.maxMarks);
     const wasLegacyConfig = input.exams?.[key]?.weightage === undefined && Number.isFinite(legacyMax) && legacyMax > 0;
     if (wasLegacyConfig && legacyMax !== result.exams[key].maxMarks) {

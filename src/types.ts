@@ -10,7 +10,9 @@ export type Student = {
   attendance: { workingDays: number; daysPresent: number; daysAbsent: number; remarks: string };
   remarks: { overall: string; attendance: string; subjects: Record<string, string> };
 };
-export type ExamKey = 'pa1' | 'pa2' | 'hy' | 'pa3' | 'pa4' | 'final';
+export type ExamKey = string;
+export type ExamPreset = 'six' | 'four' | 'two' | 'custom';
+export type ExamConfig = { name: string; shortName: string; maxMarks: number; weightage: number };
 export type Marks = Record<string, string | number | null> & { studentId: string; roll: string };
 export type GradeRule = { grade: string; minPercentage: number; operator?: '>=' | '>' | '<=' | '<' };
 export type SignatureBlock = { id: string; label: string; name: string; signatureImage?: string; enabled: boolean; widthMm?: number; heightMm?: number };
@@ -18,6 +20,11 @@ export type School = {
   name: string; address: string; affiliation: string; registrationNumber: string;
   established: string; logo?: string; logoLeft?: string; logoRight?: string; watermark?: string; watermarkUseLeftLogo?: boolean; rightLogoUseLeftLogo?: boolean; showLeftLogo?: boolean; showRightLogo?: boolean; showWatermark?: boolean; principalName: string;
   examControllerName: string; classTeacherName: string;
+  headerMeta: {
+    leftLabel: string; middleLabel: string; rightLabel: string;
+    showLeft: boolean; showMiddle: boolean; showRight: boolean;
+    managementLine: string; showManagementLine: boolean;
+  };
 };
 export type AppData = {
   schemaVersion: string;
@@ -27,7 +34,9 @@ export type AppData = {
   school: School;
   subjects: { id: string; name: string; enabled?: boolean }[];
   classSubjectConfigs: Record<string, { id: string; name: string; enabled?: boolean }[]>;
-  exams: Record<ExamKey, { name: string; shortName: string; maxMarks: number; weightage: number }>;
+  examPreset: ExamPreset;
+  examOrder: ExamKey[];
+  exams: Record<ExamKey, ExamConfig>;
   students: Student[];
   results: Record<ExamKey, Marks[]>;
   grading: { passPercentage: number; grades: GradeRule[] };
@@ -39,7 +48,7 @@ export type AppData = {
     showIssueDate: boolean; issueDate: string; issueDateFormat: 'DD-MM-YYYY' | 'DD/MM/YYYY' | 'YYYY-MM-DD'; issueDateLabel: string;
     signatures: SignatureBlock[];
   };
-  settings: { sectionEnabled: boolean };
+  settings: { sectionEnabled: boolean; allowMultipleClassImport: boolean; promotionExams: ExamKey[]; requiredStudentFields: string[]; recommendedStudentFields: string[]; requiredExamMarks: ExamKey[]; recommendedExamMarks: ExamKey[] };
   remarkRules: {
     overall: { grade: string; text: string }[];
     weakSubjectBelowPercentage: number;

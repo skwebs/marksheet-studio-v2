@@ -1,9 +1,5 @@
 node_modules
 .vercel
-
-# Build output
-dist/
-
-# Environment files
+dist
 .env*
-!.env.example
+*.zip

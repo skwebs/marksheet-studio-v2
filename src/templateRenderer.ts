@@ -1,9 +1,14 @@
 import QRCode from 'qrcode';
 import type { AppData, Student, ExamKey } from './types';
-import { examKeys } from './data';
+import { getExamKeys } from './data';
+import { hasMark, convertedWeightage, weightageMaximum, calculateStudentPerformance } from './calculations';
 
 const esc = (value: unknown) => String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]!));
-const num = (value: unknown) => typeof value === 'number' && Number.isFinite(value) ? value : 0;
+const num = (value: unknown) => {
+  if (value === null || value === undefined || value === '') return 0;
+  const parsed = typeof value === 'number' ? value : Number(String(value).trim());
+  return Number.isFinite(parsed) ? parsed : 0;
+};
 const fmt = (value: number, precision: number = 1) => { if (!Number.isFinite(value)) return '0'; if (precision === 0) return String(Math.round(value)); const factor=10**precision; return (Math.round((value+Number.EPSILON)*factor)/factor).toFixed(precision); };
 function getMarks(data: AppData, student: Student, key: ExamKey) {
   return data.results[key]?.find(m => m.studentId === student.studentId || (!!student.roll && m.roll === student.roll));
@@ -12,20 +17,8 @@ function gradeFor(data: AppData, percentage: number) {
   const rules = data.grading.grades;
   return rules.find(g => { const op = g.operator || '>='; if (op === '>') return percentage > g.minPercentage; if (op === '<=') return percentage <= g.minPercentage; if (op === '<') return percentage < g.minPercentage; return percentage >= g.minPercentage; })?.grade ?? '';
 }
-function getPerformance(data: AppData, student: Student, keys: ExamKey[] = examKeys) {
-  let obtained = 0;
-  let maximum = 0;
-  const subjectRows = data.subjects.map(subject => {
-    const combined = keys.length > 1;
-    const subjectObtained = keys.reduce((sum, key) => { const raw=num(getMarks(data, student, key)?.[subject.id]); const exam=data.exams[key]; return sum + (combined && exam.maxMarks ? raw * num(exam.weightage) / num(exam.maxMarks) : raw); }, 0);
-    const subjectMaximum = keys.reduce((sum, key) => sum + (combined ? num(data.exams[key]?.weightage) : num(data.exams[key]?.maxMarks)), 0);
-    obtained += subjectObtained;
-    maximum += subjectMaximum;
-    return { subject, obtained: subjectObtained, maximum: subjectMaximum, percentage: subjectMaximum ? subjectObtained / subjectMaximum * 100 : 0 };
-  });
-  return { obtained, maximum, percentage: maximum ? obtained / maximum * 100 : 0, subjectRows };
-}
-function automaticRemarks(data: AppData, student: Student, percentage: number, keys: ExamKey[] = examKeys) {
+const getPerformance = calculateStudentPerformance;
+function automaticRemarks(data: AppData, student: Student, percentage: number, keys: ExamKey[] = getExamKeys(data)) {
   const rules = data.remarkRules;
   const overallGrade = gradeFor(data, percentage);
   const overall = (rules.overall || []).find(r => r.grade === overallGrade)?.text;
@@ -72,12 +65,12 @@ export async function renderMarksheet(sourceHtml: string, data: AppData, student
     else if (label === "Father's Name") valueCell.textContent = student.father || '';
   }
 
-  const selectedKeys = (data.marksheetSettings.reportExams?.length ? data.marksheetSettings.reportExams : examKeys).filter(k => examKeys.includes(k));
-  const reportKeys = selectedKeys.length ? selectedKeys : [examKeys[2]];
-  const titleKey: ExamKey = reportKeys.includes('final') ? 'final' : reportKeys.includes('hy') ? 'hy' : reportKeys.includes('pa4') ? 'pa4' : reportKeys.includes('pa3') ? 'pa3' : reportKeys.includes('pa2') ? 'pa2' : 'pa1';
+  const selectedKeys = (data.marksheetSettings.reportExams?.length ? data.marksheetSettings.reportExams : getExamKeys(data)).filter(k => getExamKeys(data).includes(k));
+  const reportKeys = selectedKeys.length ? selectedKeys : [getExamKeys(data)[0]];
+  const titleKey: ExamKey = ['final','hy','pa4','pa3','pa2','pa1'].find(key => reportKeys.includes(key)) || reportKeys[reportKeys.length - 1] || getExamKeys(data)[0];
   const reportTitle = data.exams[titleKey].name.toUpperCase();
   const titleRows = doc.querySelectorAll('.w-full.text-center.border-t > div');
-  if (titleRows[0]) titleRows[0].textContent = `REPORT CARD [${reportTitle || data.examType || data.exams.hy.name.toUpperCase()}]`;
+  if (titleRows[0]) titleRows[0].textContent = `REPORT CARD [${reportTitle || data.examType || data.exams[titleKey]?.name.toUpperCase() || titleKey.toUpperCase()}]`;
   if (titleRows[1]) titleRows[1].innerHTML = `SESSION <strong>${esc(data.academicSession)}</strong>`;
 
   // Resolve uploaded assets as data URLs so they also work in a new preview/print window.
@@ -99,12 +92,12 @@ export async function renderMarksheet(sourceHtml: string, data: AppData, student
     else photo.removeAttribute('src');
   }
 
-  const combinedReport = reportKeys.length > 1;
   const precision = data.marksheetSettings.marksPrecision ?? 1;
   const fmtMarks = (value: number) => fmt(value, precision);
-  const examMax = (key: ExamKey) => combinedReport ? num(data.exams[key]?.weightage) : num(data.exams[key]?.maxMarks);
-  const convertMark = (key: ExamKey, value: number) => combinedReport && num(data.exams[key]?.maxMarks) ? value * num(data.exams[key]?.weightage) / num(data.exams[key]?.maxMarks) : value;
   const reportExams = reportKeys;
+  const usesOriginalMarks = reportExams.length === 1;
+  const examMax = (key: ExamKey) => usesOriginalMarks ? Math.max(0, Number(data.exams[key]?.maxMarks) || 0) : weightageMaximum(data, key);
+  const convertMark = (key: ExamKey, value: number) => usesOriginalMarks ? value : convertedWeightage(data, key, value);
   const orientation = data.marksheetSettings.tableOrientation === 'auto'
     ? (reportExams.length === 1 ? 'subjects-columns' : 'subjects-rows')
     : data.marksheetSettings.tableOrientation;
@@ -118,19 +111,23 @@ export async function renderMarksheet(sourceHtml: string, data: AppData, student
     const th = (label: string) => { const el = doc.createElement('th'); el.textContent = label; el.className = 'px-3 py-2'; return el; };
     const td = (label: string) => { const el = doc.createElement('td'); el.textContent = label; el.className = 'px-3 py-2'; return el; };
     const tr = () => { const el = doc.createElement('tr'); el.className = 'border-b border-gray-300'; return el; };
-    const totals = Object.fromEntries(examKeys.map(k=>[k,0])) as Record<ExamKey, number>;
+    const totals = Object.fromEntries(getExamKeys(data).map(k=>[k,0])) as Record<ExamKey, number>;
+    const examMaximums = Object.fromEntries(getExamKeys(data).map(k=>[k,0])) as Record<ExamKey, number>;
     let allObtained = 0;
     let allMaximum = 0;
-    const perSubject = data.subjects.map(subject => {
+    const perSubject = data.subjects.filter(subject => subject.enabled !== false).map(subject => {
       const examValues = Object.fromEntries(reportExams.map(key => {
         const raw = getMarks(data, student, key)?.[subject.id];
-        const value = raw === null || raw === undefined || raw === '' ? null : num(raw);
+        const value = hasMark(raw) ? num(raw) : null;
         return [key, value];
       })) as Record<ExamKey, number | null>;
       const convertedValues = Object.fromEntries(reportExams.map(key=>[key, examValues[key] === null ? null : convertMark(key, examValues[key] ?? 0)])) as Record<ExamKey, number|null>;
       const obtained = reportExams.reduce((sum, key) => sum + (convertedValues[key] ?? 0), 0);
-      const maximum = reportExams.reduce((sum, key) => sum + examMax(key), 0);
-      reportExams.forEach(key => { totals[key] += convertedValues[key] ?? 0; });
+      const maximum = reportExams.reduce((sum, key) => sum + (examValues[key] === null ? 0 : examMax(key)), 0);
+      reportExams.forEach(key => {
+        totals[key] += convertedValues[key] ?? 0;
+        if (examValues[key] !== null) examMaximums[key] += examMax(key);
+      });
       allObtained += obtained;
       allMaximum += maximum;
       return { subject, examValues, convertedValues, obtained, maximum, grade: gradeFor(data, maximum ? obtained / maximum * 100 : 0) };
@@ -139,14 +136,14 @@ export async function renderMarksheet(sourceHtml: string, data: AppData, student
     if (orientation === 'subjects-columns') {
       const header = tr();
       header.append(th('#'));
-      data.subjects.forEach(subject => header.append(th(subject.name)));
+      perSubject.forEach(item => header.append(th(item.subject.name)));
       head.append(header);
       const fullMarksRow = tr(); fullMarksRow.append(th('Full Marks'));
-      perSubject.forEach(() => fullMarksRow.append(td(fmtMarks(examMax(reportExams[0])))));
+      perSubject.forEach(() => { const cell = td(fmtMarks(examMax(reportExams[0]))); cell.classList.add('static-print'); fullMarksRow.append(cell); });
       body.append(fullMarksRow);
       if (data.marksheetSettings.showMarksRow !== false) {
         const row = tr(); row.append(th('Obtained Marks'));
-        perSubject.forEach(item => row.append(td(item.examValues[reportExams[0]] === null ? '—' : fmtMarks(item.examValues[reportExams[0]]!))));
+        perSubject.forEach(item => row.append(td(item.examValues[reportExams[0]] === null ? '—' : fmtMarks(item.convertedValues[reportExams[0]] ?? 0))));
         body.append(row);
       }
       if (data.marksheetSettings.showGradeRow !== false && data.marksheetSettings.showSubjectGrade !== false) {
@@ -154,7 +151,7 @@ export async function renderMarksheet(sourceHtml: string, data: AppData, student
         perSubject.forEach(item => {
           const value = item.examValues[reportExams[0]];
           const pct = value === null ? null : (examMax(reportExams[0]) ? (item.convertedValues[reportExams[0]] ?? 0) / examMax(reportExams[0]) * 100 : 0);
-          row.append(td(pct === null ? '—' : gradeFor(data, pct)));
+          const gradeCell = td(pct === null ? '—' : gradeFor(data, pct)); gradeCell.classList.add('data-scaled'); row.append(gradeCell);
         });
         body.append(row);
       }
@@ -162,36 +159,27 @@ export async function renderMarksheet(sourceHtml: string, data: AppData, student
       const header = tr();
       header.append(th('Subject'));
       reportExams.forEach(key => header.append(th(`${data.exams[key].shortName} (${fmtMarks(examMax(key))})`)));
-      if (reportExams.length > 1 && data.marksheetSettings.showTotalColumn !== false) header.append(th(`Total (${fmtMarks(reportExams.reduce((sum,key)=>sum+examMax(key),0))})`));
+      if (reportExams.length > 1 && data.marksheetSettings.showTotalColumn !== false) header.append(th(`Total (${fmtMarks(reportExams.reduce((sum, key) => sum + examMax(key), 0))})`));
       if (data.marksheetSettings.showSubjectGrade !== false) header.append(th('Grade'));
       head.append(header);
       perSubject.forEach(item => {
         const row = tr(); row.append(th(item.subject.name));
         reportExams.forEach(key => row.append(td(item.examValues[key] === null ? '—' : fmtMarks(item.convertedValues[key] ?? 0))));
         if (reportExams.length > 1 && data.marksheetSettings.showTotalColumn !== false) row.append(td(fmtMarks(item.obtained)));
-        if (data.marksheetSettings.showSubjectGrade !== false) row.append(td(item.maximum ? item.grade : '—'));
+        if (data.marksheetSettings.showSubjectGrade !== false) { const gradeCell = td(item.maximum ? item.grade : '—'); gradeCell.classList.add('data-scaled'); row.append(gradeCell); }
         body.append(row);
       });
       const footer = tr(); footer.append(th('Total'));
-      reportExams.forEach(key => footer.append(th(fmtMarks(totals[key]))));
+      reportExams.forEach(key => { const cell = th(fmtMarks(totals[key])); cell.classList.add('data-scaled'); footer.append(cell); });
       if (reportExams.length > 1 && data.marksheetSettings.showTotalColumn !== false) footer.append(th(fmtMarks(allObtained)));
-      if (data.marksheetSettings.showSubjectGrade !== false) footer.append(th(gradeFor(data, allMaximum ? allObtained / allMaximum * 100 : 0)));
+      if (data.marksheetSettings.showSubjectGrade !== false) { const gradeCell = th(gradeFor(data, allMaximum ? allObtained / allMaximum * 100 : 0)); gradeCell.classList.add('data-scaled'); footer.append(gradeCell); }
       foot.append(footer);
     }
     if (orientation === 'subjects-columns') {
       foot.remove();
     }
   }
-  const reportPerformance = (() => {
-    const rows = data.subjects.map(subject => {
-      const obtained = reportExams.reduce((sum,key) => { const raw=num(getMarks(data, student, key)?.[subject.id]); return sum + convertMark(key, raw); }, 0);
-      const maximum = reportExams.reduce((sum,key) => sum + examMax(key), 0);
-      return { subject, obtained, maximum, percentage: maximum ? obtained / maximum * 100 : 0 };
-    });
-    const obtained = rows.reduce((sum,row)=>sum+row.obtained,0);
-    const maximum = rows.reduce((sum,row)=>sum+row.maximum,0);
-    return { subjectRows: rows, obtained, maximum, percentage: maximum ? obtained/maximum*100 : 0 };
-  })();
+  const reportPerformance = getPerformance(data, student, reportExams);
   const allObtained = reportPerformance.obtained;
   const allMaximum = reportPerformance.maximum;
   const performance = reportPerformance;
@@ -316,19 +304,24 @@ async function renderModernTemplate(doc: Document, data: AppData, student: Stude
   const precision = Math.max(0, Math.min(3, Number(data.marksheetSettings.marksPrecision ?? 1)));
   const fmtMarks = (value: number) => { if (!Number.isFinite(value)) return '0'; const factor = 10 ** precision; const rounded = Math.round((value + Number.EPSILON) * factor) / factor; return precision === 0 ? String(rounded) : rounded.toFixed(precision); };
   const classLabel = `${data.classInfo.className}${data.settings?.sectionEnabled && data.classInfo.section ? `-${data.classInfo.section}` : ''}`;
-  const reportKeys = (data.marksheetSettings.reportExams?.length ? data.marksheetSettings.reportExams : ['hy'])
-    .filter((key): key is ExamKey => examKeys.includes(key as ExamKey));
-  const keys: ExamKey[] = reportKeys.length ? reportKeys : ['hy'];
+  const reportKeys = (data.marksheetSettings.reportExams?.length ? data.marksheetSettings.reportExams : getExamKeys(data))
+    .filter((key): key is ExamKey => getExamKeys(data).includes(key as ExamKey));
+  const keys: ExamKey[] = reportKeys.length ? reportKeys : getExamKeys(data).slice(0, 1);
   const isMulti = doc.getElementById('marksTableFoot') !== null;
   const enabledSubjects = data.subjects.filter(subject => subject.enabled !== false);
-  const maxFor = (key: ExamKey) => Math.max(0, keys.length > 1 ? Number(data.exams[key]?.weightage ?? data.exams[key]?.maxMarks) || 0 : Number(data.exams[key]?.maxMarks) || 0);
+  // A single-exam report is a standalone assessment and must show the original
+  // marks scale. Weightage conversion is reserved for combined/multi-exam reports.
+  const usesOriginalMarks = keys.length === 1;
+  const maxFor = (key: ExamKey) => usesOriginalMarks
+    ? Math.max(0, Number(data.exams[key]?.maxMarks) || 0)
+    : weightageMaximum(data, key);
   const getExamMarks = (key: ExamKey, subjectId: string): number | null => {
     const record = data.results[key]?.find(item => item.studentId === student.studentId || (!item.studentId && item.roll === student.roll));
     const raw = record?.[subjectId];
-    if (raw === null || raw === undefined || raw === '') return null;
+    if (!hasMark(raw)) return null;
     const value = Number(raw);
     if (!Number.isFinite(value)) return null;
-    return keys.length > 1 && maxFor(key) ? value * maxFor(key) / Math.max(1, Number(data.exams[key]?.maxMarks) || 1) : value;
+    return usesOriginalMarks ? value : convertedWeightage(data, key, value);
   };
   const gradeForPercentage = (percentage: number) => data.grading.grades.find(rule => {
     const op = rule.operator || '>=';
@@ -340,7 +333,7 @@ async function renderModernTemplate(doc: Document, data: AppData, student: Stude
   const rows = enabledSubjects.map(subject => {
     const examMarks = keys.map(key => getExamMarks(key, subject.id));
     const obtained = examMarks.reduce<number>((sum, mark) => sum + (mark ?? 0), 0);
-    const maximum = keys.reduce((sum, key) => sum + maxFor(key), 0);
+    const maximum = keys.reduce((sum, key, index) => sum + (examMarks[index] === null ? 0 : maxFor(key)), 0);
     return { subject, examMarks, obtained, maximum, percentage: maximum ? obtained / maximum * 100 : 0 };
   });
   const grandObtained = rows.reduce((sum, row) => sum + row.obtained, 0);
@@ -371,21 +364,46 @@ async function renderModernTemplate(doc: Document, data: AppData, student: Stude
   const rightLogo = data.school.rightLogoUseLeftLogo !== false ? leftLogo : (data.school.logoRight || '');
   const logoImages = [...doc.querySelectorAll<HTMLImageElement>('img[alt="National Public School Logo"], img[alt="School Emblem"], img[alt="Beti Bachao Beti Padhao"]')];
   logoImages.forEach((image, index) => {
-    const logo = index === 0 ? leftLogo : rightLogo;
-    if (logo) { image.src = logo; image.removeAttribute('hidden'); }
+    const isLeft = index === 0;
+    const logo = isLeft ? leftLogo : rightLogo;
+    const enabled = isLeft ? data.school.showLeftLogo !== false : data.school.showRightLogo !== false;
+    if (logo && enabled) { image.src = logo; image.removeAttribute('hidden'); }
     else { image.removeAttribute('src'); image.setAttribute('hidden', 'hidden'); }
-    hide(image.parentElement, !logo);
+    hide(image.parentElement, !logo || !enabled);
     image.alt = `${data.school.name || 'School'} logo`;
   });
   const schoolName = doc.querySelector('.school-name');
   const schoolAddress = doc.querySelector('.school-address');
   if (schoolName) schoolName.textContent = data.school.name || '';
   if (schoolAddress) { schoolAddress.textContent = data.school.address || ''; hide(schoolAddress, !data.school.address); }
-  const established = doc.getElementById('schoolEstablished');
-  const registration = doc.getElementById('schoolRegistration');
-  if (established) { established.textContent = data.school.established ? `Estd. : ${data.school.established}` : ''; hide(established, !data.school.established); }
-  if (registration) { registration.textContent = data.school.registrationNumber ? `Reg. No. : ${data.school.registrationNumber}` : ''; hide(registration, !data.school.registrationNumber); }
-  if (established?.parentElement) hide(established.parentElement, !data.school.established && !data.school.registrationNumber);
+  // Three optional metadata columns. Labels and values are entirely data-driven.
+  const meta = data.school.headerMeta;
+  const metadataItems = [
+    { id: 'Left', label: meta?.leftLabel || '', value: data.school.established, enabled: meta?.showLeft !== false },
+    { id: 'Middle', label: meta?.middleLabel || '', value: data.school.affiliation, enabled: meta?.showMiddle !== false },
+    { id: 'Right', label: meta?.rightLabel || '', value: data.school.registrationNumber, enabled: meta?.showRight !== false }
+  ];
+  metadataItems.forEach(item => {
+    setText(`schoolMeta${item.id}Label`, item.label);
+    setText(`schoolMeta${item.id}Value`, item.value);
+    const cell = doc.getElementById(`schoolMeta${item.id}`);
+    hide(cell, !item.enabled || !String(item.value || '').trim());
+    hide(cell?.querySelector('.meta-separator'), !String(item.label || '').trim() || !String(item.value || '').trim());
+  });
+  const metaRow = doc.getElementById('schoolHeaderMeta');
+  const visibleMetaItems = metadataItems.filter(item => item.enabled && String(item.value || '').trim());
+  hide(metaRow, visibleMetaItems.length === 0);
+  const hasMiddleMeta = visibleMetaItems.some(item => item.id === 'Middle');
+  const hasLeftMeta = visibleMetaItems.some(item => item.id === 'Left');
+  const hasRightMeta = visibleMetaItems.some(item => item.id === 'Right');
+  metaRow?.classList.toggle('meta-without-middle', !hasMiddleMeta);
+  metaRow?.classList.toggle('meta-one-side', !hasMiddleMeta && (hasLeftMeta !== hasRightMeta));
+
+  const managementLine = doc.getElementById('schoolManagementLine');
+  if (managementLine) {
+    setText('schoolManagementLine', meta?.managementLine || '');
+    hide(managementLine, meta?.showManagementLine !== true || !String(meta?.managementLine || '').trim());
+  }
 
   setText('examTitle', data.examType || 'REPORT CARD');
   setText('academicSession', data.academicSession);
@@ -415,7 +433,7 @@ async function renderModernTemplate(doc: Document, data: AppData, student: Stude
     : `.main-content::before{content:none!important;background-image:none!important;}`;
   doc.head.append(watermarkStyle);
 
-  // Result table: every cell, maximum, total and grade comes from selected exams.
+  // Result table: single-exam reports use original marks; combined reports use converted contributions.
   const table = doc.querySelector<HTMLTableElement>('table.w-full.table-fixed');
   const head = doc.getElementById('marksTableHead') || table?.querySelector('thead');
   const body = doc.getElementById('marksTableBody');
@@ -429,22 +447,33 @@ async function renderModernTemplate(doc: Document, data: AppData, student: Stude
       const header = doc.createElement('tr');
       header.append(makeCell('th', 'Subjects', 'w-44 py-2 px-3 text-left'));
       keys.forEach(key => header.append(makeCell('th', `${data.exams[key].shortName} (${fmtMarks(maxFor(key))})`, 'py-2 px-2')));
-      if (keys.length > 1 && data.marksheetSettings.showTotalColumn !== false) header.append(makeCell('th', `Total (${fmtMarks(keys.reduce((sum, key) => sum + maxFor(key), 0))})`));
+      if (keys.length > 1 && data.marksheetSettings.showTotalColumn !== false) {
+        const totalMaximum = keys.reduce((sum, key) => sum + maxFor(key), 0);
+        header.append(makeCell('th', `Total (${fmtMarks(totalMaximum)})`, 'bg-blue-100/50 text-blue-950'));
+      }
       if (data.marksheetSettings.showSubjectGrade !== false) header.append(makeCell('th', 'Grade'));
       head.append(header);
       const totals = Object.fromEntries(keys.map(key => [key, 0])) as Record<ExamKey, number>;
+      const examMaximums = Object.fromEntries(keys.map(key => [key, 0])) as Record<ExamKey, number>;
       rows.forEach(row => {
         const tr = doc.createElement('tr'); tr.append(makeCell('td', row.subject.name, 'py-1.5 px-3 text-left'));
-        row.examMarks.forEach((mark, index) => { totals[keys[index]] += mark ?? 0; tr.append(makeCell('td', mark === null ? '—' : fmtMarks(mark), 'py-1.5 px-2')); });
-        if (keys.length > 1 && data.marksheetSettings.showTotalColumn !== false) tr.append(makeCell('td', fmtMarks(row.obtained)));
-        if (data.marksheetSettings.showSubjectGrade !== false) tr.append(makeCell('td', row.maximum ? gradeForPercentage(row.percentage) : '—'));
+        row.examMarks.forEach((mark, index) => {
+          const key = keys[index];
+          // getExamMarks already returns converted weightage; never convert twice.
+          const converted = mark;
+          totals[key] += converted ?? 0;
+          if (mark !== null) examMaximums[key] += maxFor(key);
+          tr.append(makeCell('td', converted === null ? '—' : fmtMarks(converted), 'py-1.5 px-2 data-scaled'));
+        });
+        if (keys.length > 1 && data.marksheetSettings.showTotalColumn !== false) tr.append(makeCell('td', fmtMarks(row.obtained), 'data-scaled bg-blue-50/40 text-blue-950'));
+        if (data.marksheetSettings.showSubjectGrade !== false) tr.append(makeCell('td', row.maximum ? gradeForPercentage(row.percentage) : '—', 'data-scaled text-emerald-800'));
         body.append(tr);
       });
       if (foot) {
         const totalRow = doc.createElement('tr'); totalRow.append(makeCell('th', 'Grand Total', 'py-1.5 px-3 text-left'));
-        keys.forEach(key => totalRow.append(makeCell('th', fmtMarks(totals[key]))));
-        if (keys.length > 1 && data.marksheetSettings.showTotalColumn !== false) totalRow.append(makeCell('th', fmtMarks(grandObtained)));
-        if (data.marksheetSettings.showSubjectGrade !== false) totalRow.append(makeCell('th', overallGrade));
+        keys.forEach(key => totalRow.append(makeCell('th', fmtMarks(totals[key]), 'data-scaled')));
+        if (keys.length > 1 && data.marksheetSettings.showTotalColumn !== false) totalRow.append(makeCell('th', fmtMarks(grandObtained), 'data-scaled bg-blue-100/60 text-blue-950'));
+        if (data.marksheetSettings.showSubjectGrade !== false) totalRow.append(makeCell('th', overallGrade, 'data-scaled text-emerald-800'));
         foot.append(totalRow);
       }
     } else {
@@ -452,14 +481,14 @@ async function renderModernTemplate(doc: Document, data: AppData, student: Stude
       rows.forEach(row => header.append(makeCell('th', row.subject.name, 'py-2 px-1')));
       head.append(header);
       const fullMarksRow = doc.createElement('tr'); fullMarksRow.append(makeCell('th', 'Full Marks', 'py-2 px-2'));
-      rows.forEach(row => fullMarksRow.append(makeCell('td', fmtMarks(maxFor(keys[0])), 'py-2 px-1')));
+      rows.forEach(row => fullMarksRow.append(makeCell('td', fmtMarks(maxFor(keys[0])), 'py-2 px-1 static-print')));
       const marksRow = doc.createElement('tr'); marksRow.append(makeCell('th', 'Obtained Marks', 'py-2 px-2'));
-      rows.forEach(row => marksRow.append(makeCell('td', row.examMarks[0] === null ? '—' : fmtMarks(row.examMarks[0]!), 'py-2 px-1')));
+      rows.forEach(row => marksRow.append(makeCell('td', row.examMarks[0] === null ? '—' : fmtMarks(row.examMarks[0]!), 'py-2 px-1 data-scaled')));
       body.append(fullMarksRow);
       if (data.marksheetSettings.showMarksRow !== false) body.append(marksRow);
       if (data.marksheetSettings.showGradeRow !== false && data.marksheetSettings.showSubjectGrade !== false) {
         const gradeRow = doc.createElement('tr'); gradeRow.append(makeCell('th', 'Grade', 'py-2 px-2'));
-        rows.forEach(row => gradeRow.append(makeCell('td', row.examMarks[0] === null ? '—' : gradeForPercentage(row.percentage), 'py-2 px-1')));
+        rows.forEach(row => gradeRow.append(makeCell('td', row.examMarks[0] === null ? '—' : gradeForPercentage(row.percentage), 'py-2 px-1 data-scaled')));
         body.append(gradeRow);
       }
     }
@@ -478,10 +507,17 @@ async function renderModernTemplate(doc: Document, data: AppData, student: Stude
   }
 
   // Summary cards and visibility follow the marksheet configuration.
-  setText('summaryMarks', `${fmtMarks(grandObtained)} / ${fmtMarks(grandMaximum)}`);
+  setText('summaryMarks', `${fmtMarks(grandObtained)}/${fmtMarks(grandMaximum)}`);
+  const summaryMarksLabel = doc.querySelector('#summaryMarks')?.previousElementSibling;
+  if (summaryMarksLabel) summaryMarksLabel.textContent = 'Obtained Marks';
+  const summaryPercentageLabel = doc.querySelector('#summaryPercentage')?.previousElementSibling;
+  if (summaryPercentageLabel) summaryPercentageLabel.textContent = 'Percentage';
   setText('summaryPercentage', `${percentage.toFixed(1)}%`);
-  setText('summaryAttendance', `${fmtMarks(presentDays)} / ${fmtMarks(workingDays)}`);
+  setText('summaryAttendance', `${fmtMarks(presentDays)}/${fmtMarks(workingDays)}`);
   setText('summaryGrade', overallGrade);
+  ['summaryMarks', 'summaryPercentage', 'summaryAttendance', 'summaryGrade'].forEach(id => {
+    doc.getElementById(id)?.classList.add('data-scaled');
+  });
   setText('teacherRemarks', remarks);
   const summary = doc.getElementById('summaryMarks')?.closest('.grid.grid-cols-2');
   hide(summary, data.marksheetSettings.showOverallSummary === false);
@@ -490,7 +526,7 @@ async function renderModernTemplate(doc: Document, data: AppData, student: Stude
   hide(doc.getElementById('teacherRemarks')?.parentElement, data.marksheetSettings.showRemarks === false);
 
   // Subject performance chart uses the same selected-exam values as the table.
-  setText('marksChartScale', keys.length === 1 ? `Marks obtained / ${fmtMarks(maxFor(keys[0]))}` : `Total marks / ${fmtMarks(keys.reduce((sum, key) => sum + maxFor(key), 0))}`);
+  setText('marksChartScale', 'Marks obtained / total marks');
   setText('marksChartAverage', `${percentage.toFixed(1)}%`);
   setText('marksChartCaption', `${rows.length} subjects · performance across selected exams`);
   const chart = doc.getElementById('marksChart');
@@ -527,15 +563,13 @@ async function renderModernTemplate(doc: Document, data: AppData, student: Stude
       const normalized = name.trim().toLowerCase().replace(/\s+/g, ' ');
       return subjectAbbreviations[normalized] || name.trim().split(/\s+/).map(word => word.slice(0, 1)).join('').slice(0, 3).toUpperCase() || 'Sub';
     };
-    const subjectTokens = rows.map(row => `${abbreviateSubject(row.subject.name)}:${fmtMarks(row.obtained)}`);
+    const subjectTokens = rows.map(row => `${abbreviateSubject(row.subject.name)}:${fmtMarks(row.obtained)}/${fmtMarks(row.maximum)}`);
     const subjectLines: string[] = [];
     for (let i = 0; i < subjectTokens.length; i += 3) subjectLines.push(subjectTokens.slice(i, i + 3).join(' '));
-    const maxPerSubject = rows.length ? rows[0].maximum : grandMaximum;
     const qrPayload = [
       `${schoolInitials} | ${examLabel} | ${sessionLabel}`,
       student.name || '—',
       `Class:${classLabel} | Roll:${student.roll || '—'}`,
-      `Max:${fmtMarks(maxPerSubject)}`,
       ...subjectLines,
       `Total:${fmtMarks(grandObtained)}/${fmtMarks(grandMaximum)} (${percentage.toFixed(2)}%)`,
       `Grade:${overallGrade || '—'}`,

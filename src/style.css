@@ -83,3 +83,19 @@
 .cropper-stage .cropper-container{max-width:100%!important;max-height:100%!important}
 @media(max-width:600px){.crop-modal-backdrop{padding:4px;overflow:hidden}.crop-modal{max-height:calc(100dvh - 8px);height:auto;overflow-y:auto}.cropper-stage{height:min(38dvh,300px);min-height:190px;max-height:300px}.crop-modal-header h2{font-size:16px}.crop-modal-header p{font-size:11px}}
 .form-grid>.panel-subsection{grid-column:1/-1;padding:14px 0;border:0}
+
+/* Class workspace selector and destructive actions */
+.workspace-switcher{display:grid;gap:6px;padding:0 3px}.workspace-switcher label{font-size:10px;color:#98a2b3;font-weight:600}.workspace-switcher select{width:100%;min-width:0;background:#101828;color:#f9fafb;border:1px solid #475467;border-radius:7px;padding:8px;font-size:11px}.btn-danger{background:#fff5f5;border-color:#fecdca;color:#b42318}.btn-danger:hover{background:#fee4e2}.session-card input:disabled{opacity:.72;cursor:not-allowed;background:#344054}.btn:disabled{opacity:.5;cursor:not-allowed}
+
+.class-lock-note{display:block;padding:0 3px;color:#fdb022;font-size:10px;line-height:1.45}
+
+
+/* Exam flexibility, data readiness and promotion selection */
+.exam-config-row-expanded{grid-template-columns:42px repeat(5,minmax(110px,1fr)) 34px;align-items:end}
+.exam-config-order{display:flex;align-items:center;gap:5px;padding-bottom:8px}.exam-config-order>div{display:grid;gap:1px}.exam-config-order .icon-btn{padding:3px}
+.data-readiness{display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;padding:13px 18px;border-bottom:1px solid #eaecf0;background:#fcfcfd;font-size:12px}.data-readiness>div{display:grid;gap:4px}.data-readiness>div>span{font-size:11px;color:#667085}.data-readiness label{display:flex;align-items:center;gap:8px}.data-readiness input{accent-color:#3448c5;width:16px;height:16px}.readiness-warning,.setting-warning{color:#b54708;font-weight:700}.readiness-ready{color:#027a48;font-weight:700}.promotion-panel{margin-top:16px}.promotion-table{min-width:760px}.promotion-panel>.row-actions{padding:16px 20px}.promotion-panel>.muted{display:block;padding:0 20px 18px;font-size:11px;line-height:1.5}.exam-config-row-expanded .field input,.exam-config-row-expanded .field select{padding:8px;font-size:11px}.exam-config-row-expanded .field>span{font-size:10px}.exam-config-row-expanded>button{margin-bottom:7px}
+@media(max-width:1000px){.exam-config-row-expanded{grid-template-columns:36px repeat(2,minmax(0,1fr)) 34px}.exam-config-row-expanded .exam-config-order{grid-row:span 2}.exam-config-row-expanded>button{grid-column:4;grid-row:1}}
+@media(max-width:600px){.exam-config-row-expanded{grid-template-columns:30px minmax(0,1fr) minmax(0,1fr)}.exam-config-row-expanded .exam-config-order{grid-row:span 3;align-self:start}.exam-config-row-expanded>button{grid-column:3;grid-row:1}.data-readiness{align-items:flex-start;padding:12px}.promotion-panel>.row-actions{padding:14px}.promotion-panel>.muted{padding:0 14px 14px}}
+
+.student-validation-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:9px}.student-validation-row{display:flex;align-items:center;justify-content:space-between;gap:10px;border:1px solid #e4e7ec;border-radius:8px;padding:8px 10px;font-size:11px}.student-validation-row>span{font-weight:600;color:#344054}.student-validation-row select{max-width:132px;padding:6px 8px;border:1px solid #d0d5dd;border-radius:6px;background:#fff;font-size:11px}.setting-warning{font-size:11px}
+@media(max-width:560px){.student-validation-grid{grid-template-columns:1fr}}
